@@ -11,10 +11,24 @@ async fn is_alive() -> impl Responder {
 
 pub async fn run() -> std::io::Result<()> {
     HttpServer::new(|| {
-        App::new()
-        .service(is_alive)
-    })
+            App::new()
+            .service(is_alive)
+        })
     .bind(("127.0.0.1", 8123))?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::{body::MessageBody, http::header::ContentType, test, App};
+
+    #[actix_web::test]
+    async fn is_alive() {
+        let app = test::init_service(App::new().service(super::is_alive)).await;
+        let request = test::TestRequest::get().uri("/is_alive").to_request();
+        let response = test::call_service(&app, request).await;
+        assert!(response.status().is_success());
+        assert_eq!(response.into_body().size(), actix_web::body::BodySize::Sized(0));
+    }
 }
