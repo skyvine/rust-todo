@@ -21,7 +21,7 @@ pub async fn run() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use actix_web::{body::MessageBody, http::header::ContentType, test, App};
+    use actix_web::{body::MessageBody, test, App};
 
     #[actix_web::test]
     async fn is_alive() {
