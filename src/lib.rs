@@ -9,12 +9,12 @@ async fn is_alive() -> impl Responder {
     HttpResponse::Ok()
 }
 
-pub async fn run() -> std::io::Result<()> {
+pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
     HttpServer::new(|| {
             App::new()
             .service(is_alive)
         })
-    .bind(("127.0.0.1", 8123))?
+    .bind((ip_address, port))?
     .run()
     .await
 }
