@@ -1,4 +1,4 @@
-use actix_web::{get, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 
 /// An endpoint to checks that the server is up.
 /// 
@@ -6,6 +6,17 @@ use actix_web::{get, App, HttpResponse, HttpServer, Responder};
 /// the server is running and responding to requests.
 #[get("/is_alive")]
 async fn is_alive() -> impl Responder {
+    HttpResponse::Ok()
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct NewAccountInfo {
+    name: String,
+    password: String,
+}
+
+#[post("/register_account")]
+async fn register_account(account_info: actix_web::web::Json<NewAccountInfo>) -> impl Responder {
     HttpResponse::Ok()
 }
 
@@ -30,5 +41,16 @@ mod tests {
         let response = test::call_service(&app, request).await;
         assert!(response.status().is_success());
         assert_eq!(response.into_body().size(), actix_web::body::BodySize::Sized(0));
+    }
+
+    #[actix_web::test]
+    async fn regitering_account_is_successful() {
+        let app = test::init_service(App::new().service(super::register_account)).await;
+        let request = test::TestRequest::post().uri("/register_account").set_json(super::NewAccountInfo {
+            name:     String::from("new-name"),
+            password: String::from("new-password")
+        }).to_request();
+        let response = test::call_service(&app, request).await;
+        assert!(response.status().is_success());
     }
 }
