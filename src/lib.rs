@@ -1,4 +1,9 @@
+mod schema;
+
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
+use diesel::prelude::*;
+use dotenvy::dotenv;
+use std::env;
 
 /// An endpoint to checks that the server is up.
 /// 
@@ -15,12 +20,43 @@ struct NewAccountInfo {
     password: String,
 }
 
+fn establish_connection() -> Result<PgConnection, ConnectionError> {
+    let database_url = match env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            let msg = String::from("DATABASE_URL is not set, unable to establish connection");
+            return Err(ConnectionError::InvalidConnectionUrl(msg))
+        }
+    };
+
+    PgConnection::establish(&database_url)
+}
+
 #[post("/register_account")]
-async fn register_account(account_info: actix_web::web::Json<NewAccountInfo>) -> impl Responder {
-    HttpResponse::Ok()
+async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>) -> impl Responder {
+    use self::schema::users::dsl::*;
+
+    let connection = &mut establish_connection();
+
+    if let Err(e) = connection {
+        eprintln!("Unable to establish connection: {:?}", e);
+        return HttpResponse::InternalServerError();
+    }
+
+    // move not allowed in .values() call below, avoid cloning by replacing
+    let un = std::mem::replace(&mut account_info.name, String::default());
+    let pw = std::mem::replace(&mut account_info.password, String::default());
+
+    match diesel::insert_into(users)
+        .values((username.eq(un), password.eq(pw)))
+        .execute(connection.as_mut().unwrap()) {
+            Ok(_) => HttpResponse::Ok(),
+            Err(_) => HttpResponse::InternalServerError()
+        }
 }
 
 pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
+    dotenv().ok();
     HttpServer::new(|| {
             App::new()
             .service(is_alive)
