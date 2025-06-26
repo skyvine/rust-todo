@@ -39,13 +39,13 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
     let connection = &mut establish_connection();
 
     if let Err(e) = connection {
-        eprintln!("Unable to establish connection: {:?}", e);
+        eprintln!("Unable to establish connection: {e:?}");
         return HttpResponse::InternalServerError();
     }
 
     // move not allowed in .values() call below, avoid cloning by replacing
-    let un = std::mem::replace(&mut account_info.name, String::default());
-    let pw = std::mem::replace(&mut account_info.password, String::default());
+    let un = std::mem::take(&mut account_info.name);
+    let pw = std::mem::take(&mut account_info.password);
 
     match diesel::insert_into(users)
         .values((username.eq(un), password.eq(pw)))
