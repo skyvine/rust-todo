@@ -17,12 +17,12 @@ jobs:
 
       - name: Install Diesel
         run : |
-          apt install postgresql-17
+          sudo apt install postgresql-17
           cargo install diesel_cli --no-default-features --features postgres
 
       - name: Setup Database
         run: |
-          bash scripts/run_test_database.sh
+          sudo bash scripts/run_test_database.sh
           diesel migration run
 
       - name: Run Tests
