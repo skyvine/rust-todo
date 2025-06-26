@@ -21,6 +21,8 @@ jobs:
           cargo install diesel_cli --no-default-features --features postgres
 
       - name: Setup Database
+        env:
+          DATABASE_URL: postgres://postgres:test-password@localhost/todo
         run: |
           sudo bash scripts/run_test_database.sh
           diesel migration run
