@@ -17,7 +17,7 @@ jobs:
 
       - name: Install Diesel
         run : |
-          sudo apt install postgresql-17
+          sudo apt-get install postgresql-17
           cargo install diesel_cli --no-default-features --features postgres
 
       - name: Setup Database
