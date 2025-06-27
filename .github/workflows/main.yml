@@ -8,6 +8,16 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB:       todo
+
     env:
       DATABASE_URL: postgres://postgres:test-password@localhost/todo
     steps:
@@ -24,7 +34,6 @@ jobs:
 
       - name: Setup Database
         run: |
-          sudo bash scripts/run_test_database.sh
           diesel migration run
 
       - name: Run Tests
