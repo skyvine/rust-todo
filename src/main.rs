@@ -1,5 +1,6 @@
 use clap::Parser;
 use rust_todo::run;
+use tracing_subscriber::fmt;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -16,6 +17,6 @@ struct Arguments {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let arguments = Arguments::parse();
-
+    fmt().event_format(fmt::format()).init();
     run(arguments.ip_address, arguments.port).await
 }
