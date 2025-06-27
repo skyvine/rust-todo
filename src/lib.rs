@@ -43,7 +43,7 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
     use self::schema::users::dsl::*;
 
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::TRACE, "Registering Account", request_id = request_id.to_string()).entered();
+    let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
 
     let mut connection = establish_connection();
 
