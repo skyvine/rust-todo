@@ -92,7 +92,7 @@ mod tests {
 
     #[ctor]
     unsafe fn global_init() {
-        fmt().event_format(fmt::format().json()).init();
+        fmt().event_format(fmt::format().pretty()).init();
     }
 
     #[actix_web::test]
