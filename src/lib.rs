@@ -34,7 +34,6 @@ fn establish_connection() -> Result<PgConnection, ConnectionError> {
     };
 
     let connection = PgConnection::establish(&database_url);
-    event!(Level::TRACE, "Established connection to database.");
     connection
 }
 
@@ -49,6 +48,8 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
 
     match connection {
         Ok(mut conn) => {
+            event!(Level::TRACE, "Established connection to database.");
+
             // move not allowed in .values() call below, avoid cloning by replacing
             let un = std::mem::take(&mut account_info.name);
             let pw = std::mem::take(&mut account_info.password);
