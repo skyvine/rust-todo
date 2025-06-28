@@ -45,29 +45,32 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
 
-    let mut connection = establish_connection();
+    let connection = establish_connection();
 
-    if connection.is_err() {
-        event!(Level::ERROR, "Unable to establish connection to database.");
-        return HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"));
-    }
+    match connection {
+        Ok(mut conn) => {
+            // move not allowed in .values() call below, avoid cloning by replacing
+            let un = std::mem::take(&mut account_info.name);
+            let pw = std::mem::take(&mut account_info.password);
 
-    // move not allowed in .values() call below, avoid cloning by replacing
-    let un = std::mem::take(&mut account_info.name);
-    let pw = std::mem::take(&mut account_info.password);
+            let query = diesel::insert_into(users).values((username.eq(un), password.eq(pw)));
 
-    let query = diesel::insert_into(users).values((username.eq(un), password.eq(pw)));
+            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-
-    let result = query.execute(connection.as_mut().unwrap());
-    match result {
-        Ok(_) => {
-            event!(Level::TRACE, "Query succeeded");
-            HttpResponse::Ok().finish()
-        },
-        Err(e) => {
-            event!(Level::ERROR, "Query failed: {e}");
+            let result = query.execute(&mut conn);
+            match result {
+                Ok(_) => {
+                    event!(Level::TRACE, "Query succeeded");
+                    HttpResponse::Ok().finish()
+                },
+                Err(e) => {
+                    event!(Level::ERROR, "Query failed: {e}");
+                    HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"))
+                }
+            }
+        }
+        Err(_) => {
+            event!(Level::ERROR, "Unable to establish connection to database.");
             HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"))
         }
     }
