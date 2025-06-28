@@ -30,7 +30,7 @@ jobs:
       - name: Install Diesel
         run : |
           sudo apt-get install postgresql-16
-          cargo install diesel_cli --no-default-features --features postgres
+          cargo install diesel_cli --no-default-features --features postgres --locked
 
       - name: Setup Database
         run: |
