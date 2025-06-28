@@ -69,8 +69,8 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
                 }
             }
         }
-        Err(_) => {
-            event!(Level::ERROR, "Unable to establish connection to database.");
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e}.");
             HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"))
         }
     }
