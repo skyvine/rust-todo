@@ -47,7 +47,7 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
 
     let mut connection = establish_connection();
 
-    if let Err(_) = connection {
+    if connection.is_err() {
         event!(Level::ERROR, "Unable to establish connection to database.");
         return HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"));
     }
