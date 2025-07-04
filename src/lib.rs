@@ -32,6 +32,8 @@ struct NewAccountInfo {
     password: String,
 }
 
+/// Open a new connection to the database. The DATABASE_URL environment variable must be defined and
+/// point to a running database.
 fn establish_connection() -> Result<PgConnection, ConnectionError> {
     let database_url = match env::var("DATABASE_URL") {
         Ok(url) => url,
@@ -46,6 +48,7 @@ fn establish_connection() -> Result<PgConnection, ConnectionError> {
     connection
 }
 
+/// Returns true if a user with the given name exists, false otherwise.
 fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, diesel::result::Error> {
     use self::schema::users::dsl::*;
     let query = users.filter(username.eq(name)).select(User::as_select());
@@ -53,6 +56,12 @@ fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, die
     Ok(query.load(connection)?.len() >= 1)
 }
 
+/// Create an account with the given account info.
+/// 
+/// On a success, the user will be added to the database as a valid user and return HTTP OK.
+/// 
+/// In any error state this will create a log event at the ERROR level and return an appropriate
+/// error HTTP response to send back to the client.
 #[post("/register_account")]
 async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>) -> impl Responder {
     use self::schema::users::dsl::*;
@@ -105,6 +114,7 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
     }
 }
 
+/// Run the server on the given IP address and port.
 pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
     dotenv().ok();
     HttpServer::new(|| {
@@ -127,8 +137,10 @@ mod tests {
         use super::schema::users::dsl::*;
         use super::RunQueryDsl;
 
+        // Print log messages to help debug failed tests
         fmt().event_format(fmt::format().pretty()).init();
 
+        // The tests depend on the state of the database, so ensure we always start with a clean slate.
         diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
     }
 
