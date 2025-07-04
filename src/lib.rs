@@ -4,6 +4,7 @@ use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 use diesel::prelude::*;
 use dotenvy::dotenv;
 use schema::users;
+use serde_json::json;
 use std::env;
 use tracing::{event, span, Level};
 use uuid::Uuid;
@@ -93,23 +94,23 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
                         },
                         Err(e) => {
                             event!(Level::ERROR, "Query failed: {e}");
-                            HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"))
+                            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
                         }
                     }
                 },
 
-                Ok(true) => HttpResponse::Conflict().body(format!("Request ID: {request_id}")),
+                Ok(true) => HttpResponse::Conflict().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
 
                 Err(e) => {
                     event!(Level::ERROR, "Unable to query database for existing users: {e}");
-                    HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"))
+                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
                 }
             }
         },
 
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}.");
-            HttpResponse::InternalServerError().body(format!("Request ID: {request_id}"))
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
         }
     }
 }
