@@ -19,6 +19,10 @@ async fn is_alive() -> impl Responder {
     HttpResponse::Ok()
 }
 
+// This struct is needed to set the return type in the query in user_exists, but the fields are not
+// (yet) used. Ignore the dead code warning because the fields need to exist for diesel to validate
+// the struct.
+#[allow(dead_code)]
 #[derive(Queryable, Selectable)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 struct User {
@@ -45,8 +49,7 @@ fn establish_connection() -> Result<PgConnection, ConnectionError> {
         }
     };
 
-    let connection = PgConnection::establish(&database_url);
-    connection
+    PgConnection::establish(&database_url)
 }
 
 /// Returns true if a user with the given name exists, false otherwise.
@@ -54,7 +57,7 @@ fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, die
     use self::schema::users::dsl::*;
     let query = users.filter(username.eq(name)).select(User::as_select());
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-    Ok(query.load(connection)?.len() >= 1)
+    Ok(!query.load(connection)?.is_empty())
 }
 
 /// Create an account with the given account info.
