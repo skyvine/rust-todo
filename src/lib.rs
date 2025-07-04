@@ -131,6 +131,7 @@ pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
 mod tests {
     use actix_web::{body::MessageBody, test, App};
     use ctor::ctor;
+    use tracing::Level;
     use tracing_subscriber::fmt;
 
     #[ctor]
@@ -139,7 +140,7 @@ mod tests {
         use super::RunQueryDsl;
 
         // Print log messages to help debug failed tests
-        fmt().event_format(fmt::format().pretty()).init();
+        fmt().event_format(fmt::format().pretty()).with_max_level(Level::TRACE).init();
 
         // The tests depend on the state of the database, so ensure we always start with a clean slate.
         diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
