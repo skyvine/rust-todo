@@ -3,7 +3,6 @@ mod schema;
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 use diesel::prelude::*;
 use dotenvy::dotenv;
-use schema::users;
 use serde_json::json;
 use std::env;
 use tracing::{event, span, Level};
@@ -24,6 +23,7 @@ async fn is_alive() -> impl Responder {
 // the struct.
 #[allow(dead_code)]
 #[derive(Queryable, Selectable)]
+#[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 struct User {
     id: i32,
