@@ -3,6 +3,7 @@ mod schema;
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 use diesel::prelude::*;
 use dotenvy::dotenv;
+use serde::{Deserialize, Serialize}
 use serde_json::json;
 use std::env;
 use tracing::{event, span, Level};
@@ -22,7 +23,7 @@ async fn is_alive() -> impl Responder {
 // (yet) used. Ignore the dead code warning because the fields need to exist for diesel to validate
 // the struct.
 #[allow(dead_code)]
-#[derive(Queryable, Selectable)]
+#[derive(Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 struct User {
@@ -31,10 +32,23 @@ struct User {
     password: String,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Deserialize, Serialize)]
 struct NewAccountInfo {
     name: String,
     password: String,
+}
+
+// Again, this struct exists so that queries can be made but not all of the members are currently
+// used.
+#[allow(dead_code)]
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = crate::schema::auth_keys)]
+#[diesel(belongs_to(User))]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+struct AuthKey {
+    id:      i32,
+    user_id: i32,
+    key:     String
 }
 
 /// Open a new connection to the database. The DATABASE_URL environment variable must be defined and
@@ -114,6 +128,103 @@ async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}.");
             HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, diesel::result::Error> {
+    use crate::schema::auth_keys::dsl::*;
+    use crate::schema::users::dsl::*;
+
+    let query = auth_keys.inner_join(users)
+        .filter(key.eq(auth_key))
+        .select(( AuthKey::as_select(), User::as_select()));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    Ok(query.load::<(AuthKey, User)>(connection)?[0].1.clone())
+}
+
+#[derive(Deserialize)]
+struct WhoAmIPayload {
+    auth_key: String
+}
+
+#[get("/whoami")]
+async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
+
+    let connection = establish_connection();
+
+    match connection {
+        Ok(mut conn) => 
+            match auth_key_to_user(&payload.auth_key, &mut conn) {
+                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.username}))),
+                Err(e) => {
+                    event!(Level::ERROR, "Unable to look up user: {e}");
+                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
+                }
+            },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginPayload {
+    username: String,
+    password: String
+}
+
+#[post("/login")]
+async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
+    use crate::schema::auth_keys::dsl::*;
+    use crate::schema::users::dsl::*;
+
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
+
+    let connection = establish_connection();
+
+    match connection {
+        Ok(mut conn) => {
+            let query = users
+                .filter(username.eq(&payload.username))
+                .filter(password.eq(&payload.password))
+                .select(User::as_select());
+            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+            match query.load::<User>(&mut conn) {
+                Ok(found_users) => {
+                    let user = &found_users[0];
+                    let new_key = Uuid::new_v4();
+                    let query = diesel::insert_into(auth_keys)
+                        .values((user_id.eq(user.id), key.eq(format!("{}", new_key))));
+                    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+                    match query.execute(&mut conn) {
+                        Ok(_) => {
+                            HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{}", new_key)})))
+                        },
+                        Err(e) => {
+                            event!(Level::ERROR, "Unable to insert new auth key: {e}");
+                            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                        }
+
+                    }
+                },
+                Err(e) => {
+                    event!(Level::ERROR, "Query failed: {e}");
+                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                }
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
         }
     }
 }
