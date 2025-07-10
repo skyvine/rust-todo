@@ -3,7 +3,7 @@ mod schema;
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 use diesel::prelude::*;
 use dotenvy::dotenv;
-use serde::{Deserialize, Serialize}
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
 use tracing::{event, span, Level};
@@ -145,7 +145,7 @@ fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<
     Ok(query.load::<(AuthKey, User)>(connection)?[0].1.clone())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct WhoAmIPayload {
     auth_key: String
 }
@@ -173,7 +173,7 @@ async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder 
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct LoginPayload {
     username: String,
     password: String
@@ -313,5 +313,89 @@ mod tests {
             let body = second_response.into_body();
             panic!("Response indicated success: {formatted_response}{body:?}")
         }
+    }
+
+    #[actix_web::test]
+    async fn auth_key_is_recognized() {
+        let name = String::from("auth-key-registered-name");
+        let password = String::from("auth-key-registered-password");
+        let app =
+            test::init_service(App::new()
+                .service(super::login)
+                .service(super::register_account)
+                .service(super::whoami))
+                .await;
+
+        let register_request = test::TestRequest::post().uri("/register_account").set_json(super::NewAccountInfo {
+            name: name.clone(),
+            password: password.clone(),
+        }).to_request();
+
+        let register_response = test::call_service(&app, register_request).await;
+
+        if !register_response.status().is_success() {
+            let formatted_response = format!("{register_response:?}");
+            let body = register_response.into_body();
+            panic!("Unable to register account: {formatted_response}{body:?}")
+        }
+
+        let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
+            username: name.clone(),
+            password: password.clone(),
+        }).to_request();
+
+        let login_response = test::call_service(&app, login_request).await;
+
+        if !login_response.status().is_success() {
+            let formatted_response = format!("{login_response:?}");
+            let body = login_response.into_body();
+            panic!("Unable to login: {formatted_response}{body:?}")
+        }
+
+        let auth_key = match login_response.into_body().try_into_bytes() {
+            Ok(bytes) => {
+                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
+                    Ok(dict) => {
+                        match dict["auth_key"].as_str() {
+                            Some(s) => String::from(s),
+                            None => panic!("Auth key not a string! {:?}", dict["auth_key"]),
+                        }
+                    },
+                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
+                }
+            },
+            Err(_) => panic!("Unable to extract bytes from login response!"),
+        };
+
+        let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
+            auth_key,
+        }).to_request();
+
+        let whoami_response = test::call_service(&app, whoami_request).await;
+
+        if !whoami_response.status().is_success() {
+            let formatted_response = format!("{whoami_response:?}");
+            let body = whoami_response.into_body();
+            panic!("Whoami request failed: {formatted_response}{body:?}")
+        }
+
+        let response_name = match whoami_response.into_body().try_into_bytes() {
+            Ok(bytes) => {
+                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
+                    Ok(dict) => {
+                        match dict["username"].as_str() {
+                            Some(s) => String::from(s),
+                            None => panic!("Username not a string! {:?}", dict["username"]),
+                        }
+                    },
+                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
+                }
+            },
+            Err(_) => {
+                panic!("Unable to extract bytes from whoami response!");
+            }
+        };
+
+        assert_eq!(name, response_name);
     }
 }
