@@ -250,6 +250,7 @@ mod tests {
 
     #[ctor]
     unsafe fn global_init() {
+        use super::schema::auth_keys::dsl::*;
         use super::schema::users::dsl::*;
         use super::RunQueryDsl;
 
@@ -257,6 +258,7 @@ mod tests {
         fmt().event_format(fmt::format().pretty()).with_max_level(Level::TRACE).init();
 
         // The tests depend on the state of the database, so ensure we always start with a clean slate.
+        diesel::delete(auth_keys).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
         diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
     }
 
