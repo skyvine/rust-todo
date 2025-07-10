@@ -202,7 +202,7 @@ async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
                     let user = &found_users[0];
                     let new_key = Uuid::new_v4();
                     let query = diesel::insert_into(auth_keys)
-                        .values((user_id.eq(user.id), key.eq(format!("{}", new_key))));
+                        .values((user_id.eq(user.id), key.eq(format!("{new_key}"))));
                     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
                     match query.execute(&mut conn) {
