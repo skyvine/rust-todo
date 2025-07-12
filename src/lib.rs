@@ -243,7 +243,8 @@ pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use actix_web::{body::MessageBody, test, App};
+    use actix_http::Request;
+    use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App};
     use ctor::ctor;
     use tracing::Level;
     use tracing_subscriber::fmt;
@@ -262,12 +263,25 @@ mod tests {
         diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
     }
 
+    /// Call the service, but panic if the response does not indicate success
+    async fn try_call_service<App: Service<Request, Response = ServiceResponse>>(app: &App, request: Request, message: &str) -> ServiceResponse
+    where <App as Service<Request>>::Error: std::fmt::Debug
+    {
+        let response = test::call_service(app, request).await;
+        if !response.status().is_success() {
+            let formatted_response = format!("{response:?}");
+            let body = response.into_body();
+            panic!("{message}: {formatted_response}{body:?}")
+        } else {
+            response
+        }
+    }
+
     #[actix_web::test]
     async fn is_alive() {
         let app = test::init_service(App::new().service(super::is_alive)).await;
         let request = test::TestRequest::get().uri("/is_alive").to_request();
-        let response = test::call_service(&app, request).await;
-        assert!(response.status().is_success());
+        let response = try_call_service(&app, request, "Is alive check failed").await;
         assert_eq!(response.into_body().size(), actix_web::body::BodySize::Sized(0));
     }
 
@@ -278,13 +292,7 @@ mod tests {
             name:     String::from("new-name"),
             password: String::from("new-password")
         }).to_request();
-        let response = test::call_service(&app, request).await;
-
-        if !response.status().is_success() {
-            let formatted_response = format!("{response:?}");
-            let body = response.into_body();
-            panic!("Response indicated failure: {formatted_response}{body:?}")
-        }
+        try_call_service(&app, request, "Registration request failed").await;
     }
 
     #[actix_web::test]
@@ -297,13 +305,7 @@ mod tests {
             name:     name.clone(),
             password: password.clone(),
         }).to_request();
-
-        let first_response = test::call_service(&app, first_request).await;
-        if !first_response.status().is_success() {
-            let formatted_response = format!("{first_response:?}");
-            let body = first_response.into_body();
-            panic!("Response indicated failure: {formatted_response}{body:?}")
-        }
+        try_call_service(&app, first_request, "Registration failed").await;
 
         let second_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             name,
@@ -332,27 +334,13 @@ mod tests {
             name: name.clone(),
             password: password.clone(),
         }).to_request();
-
-        let register_response = test::call_service(&app, register_request).await;
-
-        if !register_response.status().is_success() {
-            let formatted_response = format!("{register_response:?}");
-            let body = register_response.into_body();
-            panic!("Unable to register account: {formatted_response}{body:?}")
-        }
+        try_call_service(&app, register_request, "Unable to register account").await;
 
         let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
             username: name.clone(),
             password: password.clone(),
         }).to_request();
-
-        let login_response = test::call_service(&app, login_request).await;
-
-        if !login_response.status().is_success() {
-            let formatted_response = format!("{login_response:?}");
-            let body = login_response.into_body();
-            panic!("Unable to login: {formatted_response}{body:?}")
-        }
+        let login_response = try_call_service(&app, login_request, "Unable to login").await;
 
         let auth_key = match login_response.into_body().try_into_bytes() {
             Ok(bytes) => {
@@ -372,14 +360,7 @@ mod tests {
         let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
             auth_key,
         }).to_request();
-
-        let whoami_response = test::call_service(&app, whoami_request).await;
-
-        if !whoami_response.status().is_success() {
-            let formatted_response = format!("{whoami_response:?}");
-            let body = whoami_response.into_body();
-            panic!("Whoami request failed: {formatted_response}{body:?}")
-        }
+        let whoami_response = try_call_service(&app, whoami_request, "Whoami request failed").await;
 
         let response_name = match whoami_response.into_body().try_into_bytes() {
             Ok(bytes) => {
