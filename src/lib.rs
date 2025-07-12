@@ -1,6 +1,12 @@
 mod schema;
 
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
+use argon2::{
+    password_hash::{
+        rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString
+    },
+    Argon2
+};
 use diesel::prelude::*;
 use dotenvy::dotenv;
 use serde::{Deserialize, Serialize};
@@ -99,7 +105,18 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
 
             match user_exists(&un, &mut conn) {
                 Ok(false) => {
-                    let query = diesel::insert_into(users).values((username.eq(un), password.eq(pw)));
+                    let slt = SaltString::generate(&mut OsRng);
+
+                    let hashed_password = match Argon2::default().hash_password(pw.as_bytes(), &slt) {
+                        Ok(h) => h.to_string(),
+                        Err(e) => {
+                            event!(Level::ERROR, "Unable to hash password: {e:?}");
+                            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+                        }
+                    };
+
+                    let query =
+                        diesel::insert_into(users).values((username.eq(un), password.eq(hashed_password)));
 
                     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
@@ -193,27 +210,42 @@ async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
         Ok(mut conn) => {
             let query = users
                 .filter(username.eq(&payload.username))
-                .filter(password.eq(&payload.password))
                 .select(User::as_select());
             event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
             match query.load::<User>(&mut conn) {
                 Ok(found_users) => {
                     let user = &found_users[0];
-                    let new_key = Uuid::new_v4();
-                    let query = diesel::insert_into(auth_keys)
-                        .values((user_id.eq(user.id), key.eq(format!("{new_key}"))));
-                    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-                    match query.execute(&mut conn) {
-                        Ok(_) => {
-                            HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{}", new_key)})))
-                        },
+                    let hashed_password = match PasswordHash::new(&user.password) {
+                        Ok(ph) => ph,
                         Err(e) => {
-                            event!(Level::ERROR, "Unable to insert new auth key: {e}");
-                            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                            event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.password);
+                            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
                         }
+                    };
 
+                    match Argon2::default().verify_password(payload.password.as_bytes(), &hashed_password) {
+                        Ok(_) => {
+                            let new_key = Uuid::new_v4();
+                            let query = diesel::insert_into(auth_keys)
+                                .values((user_id.eq(user.id), key.eq(format!("{new_key}"))));
+                            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+                            match query.execute(&mut conn) {
+                                Ok(_) => {
+                                    HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{}", new_key)})))
+                                },
+                                Err(e) => {
+                                    event!(Level::ERROR, "Unable to insert new auth key: {e}");
+                                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                                }
+
+                            }
+                        },
+                        Err(_) => {
+                            HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                        }
                     }
                 },
                 Err(e) => {
