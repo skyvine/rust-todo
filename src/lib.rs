@@ -33,7 +33,7 @@ struct User {
 }
 
 #[derive(Deserialize, Serialize)]
-struct NewAccountInfo {
+struct UserRegistrationPayload {
     name: String,
     password: String,
 }
@@ -81,7 +81,7 @@ fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, die
 /// In any error state this will create a log event at the ERROR level and return an appropriate
 /// error HTTP response to send back to the client.
 #[post("/register_account")]
-async fn register_account(mut account_info: actix_web::web::Json<NewAccountInfo>) -> impl Responder {
+async fn register_account(mut account_info: actix_web::web::Json<UserRegistrationPayload>) -> impl Responder {
     use self::schema::users::dsl::*;
 
     let request_id = Uuid::new_v4();
@@ -274,7 +274,7 @@ mod tests {
     #[actix_web::test]
     async fn regitering_account_is_successful() {
         let app = test::init_service(App::new().service(super::register_account)).await;
-        let request = test::TestRequest::post().uri("/register_account").set_json(super::NewAccountInfo {
+        let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             name:     String::from("new-name"),
             password: String::from("new-password")
         }).to_request();
@@ -293,7 +293,7 @@ mod tests {
         let password = String::from("duplicated-password");
 
         let app = test::init_service(App::new().service(super::register_account)).await;
-        let first_request = test::TestRequest::post().uri("/register_account").set_json(super::NewAccountInfo {
+        let first_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             name:     name.clone(),
             password: password.clone(),
         }).to_request();
@@ -305,7 +305,7 @@ mod tests {
             panic!("Response indicated failure: {formatted_response}{body:?}")
         }
 
-        let second_request = test::TestRequest::post().uri("/register_account").set_json(super::NewAccountInfo {
+        let second_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             name,
             password,
         }).to_request();
@@ -328,7 +328,7 @@ mod tests {
                 .service(super::whoami))
                 .await;
 
-        let register_request = test::TestRequest::post().uri("/register_account").set_json(super::NewAccountInfo {
+        let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             name: name.clone(),
             password: password.clone(),
         }).to_request();
