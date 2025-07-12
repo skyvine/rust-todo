@@ -32,12 +32,6 @@ struct User {
     password: String,
 }
 
-#[derive(Deserialize, Serialize)]
-struct UserRegistrationPayload {
-    name: String,
-    password: String,
-}
-
 // Again, this struct exists so that queries can be made but not all of the members are currently
 // used.
 #[allow(dead_code)]
@@ -72,6 +66,12 @@ fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, die
     let query = users.filter(username.eq(name)).select(User::as_select());
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
     Ok(!query.load(connection)?.is_empty())
+}
+
+#[derive(Deserialize, Serialize)]
+struct UserRegistrationPayload {
+    name: String,
+    password: String,
 }
 
 /// Create an account with the given account info.
