@@ -277,6 +277,24 @@ mod tests {
         }
     }
 
+    fn extract_json_string(response: ServiceResponse, key: &str) -> String {
+        match response.into_body().try_into_bytes() {
+            Ok(bytes) =>
+                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
+                    Ok(dict) => {
+                        match dict[key].as_str() {
+                            Some(s) => String::from(s),
+                            None => panic!("{} is not a string! {:?}", key, dict[key]),
+                        }
+                    },
+                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
+                },
+            Err(e) => {
+                panic!("Unable to extract bytes from response {e:?}")
+            }
+        }
+    }
+
     #[actix_web::test]
     async fn is_alive() {
         let app = test::init_service(App::new().service(super::is_alive)).await;
@@ -341,44 +359,14 @@ mod tests {
             password: password.clone(),
         }).to_request();
         let login_response = try_call_service(&app, login_request, "Unable to login").await;
-
-        let auth_key = match login_response.into_body().try_into_bytes() {
-            Ok(bytes) => {
-                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
-                    Ok(dict) => {
-                        match dict["auth_key"].as_str() {
-                            Some(s) => String::from(s),
-                            None => panic!("Auth key not a string! {:?}", dict["auth_key"]),
-                        }
-                    },
-                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
-                }
-            },
-            Err(_) => panic!("Unable to extract bytes from login response!"),
-        };
+        let auth_key = extract_json_string(login_response, "auth_key");
 
         let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
             auth_key,
         }).to_request();
         let whoami_response = try_call_service(&app, whoami_request, "Whoami request failed").await;
 
-        let response_name = match whoami_response.into_body().try_into_bytes() {
-            Ok(bytes) => {
-                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
-                    Ok(dict) => {
-                        match dict["username"].as_str() {
-                            Some(s) => String::from(s),
-                            None => panic!("Username not a string! {:?}", dict["username"]),
-                        }
-                    },
-                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
-                }
-            },
-            Err(_) => {
-                panic!("Unable to extract bytes from whoami response!");
-            }
-        };
-
+        let response_name = extract_json_string(whoami_response, "username");
         assert_eq!(name, response_name);
     }
 }
