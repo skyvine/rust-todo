@@ -107,6 +107,8 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
                 Ok(false) => {
                     let slt = SaltString::generate(&mut OsRng);
 
+                    // The default paramaters from Argon2 match one of the recommendations from
+                    // OWASP (see https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id)
                     let hashed_password = match Argon2::default().hash_password(pw.as_bytes(), &slt) {
                         Ok(h) => h.to_string(),
                         Err(e) => {
