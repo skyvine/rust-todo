@@ -14,6 +14,7 @@ use serde_json::json;
 use std::env;
 use tracing::{event, span, Level};
 use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// An endpoint to checks that the server is up.
 /// 
@@ -29,7 +30,7 @@ async fn is_alive() -> impl Responder {
 // (yet) used. Ignore the dead code warning because the fields need to exist for diesel to validate
 // the struct.
 #[allow(dead_code)]
-#[derive(Clone, Queryable, Selectable)]
+#[derive(Clone, Queryable, Selectable, ZeroizeOnDrop)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 struct User {
@@ -41,7 +42,7 @@ struct User {
 // Again, this struct exists so that queries can be made but not all of the members are currently
 // used.
 #[allow(dead_code)]
-#[derive(Queryable, Selectable)]
+#[derive(Queryable, Selectable, ZeroizeOnDrop)]
 #[diesel(table_name = crate::schema::auth_keys)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -54,7 +55,7 @@ struct AuthKey {
 /// Open a new connection to the database. The DATABASE_URL environment variable must be defined and
 /// point to a running database.
 fn establish_connection() -> Result<PgConnection, ConnectionError> {
-    let database_url = match env::var("DATABASE_URL") {
+    let mut database_url = match env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => {
             let msg = String::from("DATABASE_URL is not set, unable to establish connection");
@@ -63,7 +64,9 @@ fn establish_connection() -> Result<PgConnection, ConnectionError> {
         }
     };
 
-    PgConnection::establish(&database_url)
+    let connection = PgConnection::establish(&database_url);
+    database_url.zeroize();
+    connection
 }
 
 /// Returns true if a user with the given name exists, false otherwise.
@@ -74,11 +77,14 @@ fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, die
     Ok(!query.load(connection)?.is_empty())
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct UserRegistrationPayload {
     name: String,
     password: String,
 }
+
+#[derive(ZeroizeOnDrop)]
+struct ZeroizedPassword(String);
 
 /// Create an account with the given account info.
 /// 
@@ -101,7 +107,7 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
 
             // move not allowed in .values() call below, avoid cloning by replacing
             let un = std::mem::take(&mut account_info.name);
-            let pw = std::mem::take(&mut account_info.password);
+            let pw = ZeroizedPassword(std::mem::take(&mut account_info.password));
 
             match user_exists(&un, &mut conn) {
                 Ok(false) => {
@@ -109,7 +115,7 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
 
                     // The default paramaters from Argon2 match one of the recommendations from
                     // OWASP (see https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id)
-                    let hashed_password = match Argon2::default().hash_password(pw.as_bytes(), &slt) {
+                    let hashed_password = match Argon2::default().hash_password(pw.0.as_bytes(), &slt) {
                         Ok(h) => h.to_string(),
                         Err(e) => {
                             event!(Level::ERROR, "Unable to hash password: {e:?}");
@@ -164,7 +170,7 @@ fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<
     Ok(query.load::<(AuthKey, User)>(connection)?[0].1.clone())
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct WhoAmIPayload {
     auth_key: String
 }
@@ -192,7 +198,7 @@ async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder 
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct LoginPayload {
     username: String,
     password: String
