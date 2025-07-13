@@ -283,8 +283,7 @@ mod tests {
     use actix_http::Request;
     use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App};
     use ctor::ctor;
-    use tracing::Level;
-    use tracing_subscriber::fmt;
+    use tracing_subscriber::{fmt, EnvFilter};
 
     #[ctor]
     unsafe fn global_init() {
@@ -293,7 +292,7 @@ mod tests {
         use super::RunQueryDsl;
 
         // Print log messages to help debug failed tests
-        fmt().event_format(fmt::format().pretty()).with_max_level(Level::TRACE).init();
+        fmt().event_format(fmt::format().pretty()).with_env_filter(EnvFilter::from_default_env()).init();
 
         // The tests depend on the state of the database, so ensure we always start with a clean slate.
         diesel::delete(auth_keys).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
