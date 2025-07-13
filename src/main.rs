@@ -17,6 +17,6 @@ struct Arguments {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let arguments = Arguments::parse();
-    fmt().event_format(fmt::format()).with_env_filter(EnvFilter::from_default_env()).init();
+    fmt().json().with_env_filter(EnvFilter::from_default_env()).init();
     run(arguments.ip_address, arguments.port).await
 }
