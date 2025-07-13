@@ -267,6 +267,9 @@ pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
     HttpServer::new(|| {
             App::new()
             .service(is_alive)
+            .service(register_account)
+            .service(login)
+            .service(whoami)
         })
     .bind((ip_address, port))?
     .run()
