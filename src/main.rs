@@ -18,5 +18,6 @@ struct Arguments {
 async fn main() -> std::io::Result<()> {
     let arguments = Arguments::parse();
     fmt().json().with_env_filter(EnvFilter::from_default_env()).init();
+    println!("Running on {}:{}", arguments.ip_address, arguments.port);
     run(arguments.ip_address, arguments.port).await
 }
