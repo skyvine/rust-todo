@@ -1,0 +1,10 @@
+POST /login HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Content-Type: application/json; charset=utf-8
+Content-Length: 63
+
+{
+	"username": "manual-name",
+	"password": "manual-password"
+}
