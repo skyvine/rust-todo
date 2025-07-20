@@ -132,7 +132,7 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
                     match result {
                         Ok(_) => {
                             event!(Level::TRACE, "Query succeeded");
-                            HttpResponse::Ok().finish()
+                            HttpResponse::Created().finish()
                         },
                         Err(e) => {
                             event!(Level::ERROR, "Query failed: {e}");
