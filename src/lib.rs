@@ -54,9 +54,7 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
 
-    let connection = establish_connection();
-
-    match connection {
+    match establish_connection() {
         Ok(mut conn) => {
             event!(Level::TRACE, "Established connection to database.");
 
@@ -122,9 +120,7 @@ async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder 
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
 
-    let connection = establish_connection();
-
-    match connection {
+    match establish_connection() {
         Ok(mut conn) => 
             match auth_key_to_user(&payload.auth_key, &mut conn) {
                 Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
@@ -154,9 +150,7 @@ async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
 
-    let connection = establish_connection();
-
-    match connection {
+    match establish_connection() {
         Ok(mut conn) => {
             let query = users
                 .filter(username.eq(&payload.username))
