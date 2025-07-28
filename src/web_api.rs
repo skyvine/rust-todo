@@ -145,17 +145,27 @@ struct LoginPayload {
 }
 
 #[post("/login")]
-pub async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
+pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
     use crate::schema::auth_keys::dsl::*;
     use crate::schema::users::dsl::*;
 
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
 
+    let un = match Username::new(std::mem::take(&mut payload.username)) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+        }
+    };
+
+    let pw = CleartextPassword::new(std::mem::take(&mut payload.password));
+
     match establish_connection() {
         Ok(mut conn) => {
             let query = users
-                .filter(username.eq(&payload.username))
+                .filter(username.eq(un.as_ref()))
                 .select(database::User::as_select());
             event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
@@ -171,7 +181,7 @@ pub async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responde
                         }
                     };
 
-                    match Argon2::default().verify_password(payload.password.as_bytes(), &hashed_password) {
+                    match Argon2::default().verify_password(pw.as_ref().as_bytes(), &hashed_password) {
                         Ok(_) => {
                             let new_key = Uuid::new_v4();
                             let query = diesel::insert_into(auth_keys)
