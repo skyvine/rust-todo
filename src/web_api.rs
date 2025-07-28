@@ -5,6 +5,7 @@ use crate::database::{
     establish_connection,
     user_exists,
 };
+use crate::domain_types::ZeroizedPassword;
 
 use actix_web::{get, post, HttpResponse, Responder};
 use argon2::{
@@ -35,9 +36,6 @@ struct UserRegistrationPayload {
     name: String,
     password: String,
 }
-
-#[derive(ZeroizeOnDrop)]
-struct ZeroizedPassword(String);
 
 /// Create an account with the given account info.
 /// 
