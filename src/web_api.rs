@@ -33,7 +33,7 @@ pub async fn is_alive() -> impl Responder {
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct UserRegistrationPayload {
-    name: String,
+    username: String,
     password: String,
 }
 
@@ -55,7 +55,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
             event!(Level::TRACE, "Established connection to database.");
 
             // move not allowed in .values() call below, avoid cloning by replacing
-            let un = std::mem::take(&mut account_info.name);
+            let un = std::mem::take(&mut account_info.username);
             let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
 
             match user_exists(&un, &mut conn) {
@@ -266,7 +266,7 @@ mod tests {
     async fn regitering_account_is_successful() {
         let app = test::init_service(App::new().service(super::register_account)).await;
         let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            name:     String::from("new-name"),
+            username: String::from("new-name"),
             password: String::from("new-password")
         }).to_request();
         try_call_service(&app, request, "Registration request failed").await;
@@ -279,13 +279,13 @@ mod tests {
 
         let app = test::init_service(App::new().service(super::register_account)).await;
         let first_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            name:     name.clone(),
+            username: name.clone(),
             password: password.clone(),
         }).to_request();
         try_call_service(&app, first_request, "Registration failed").await;
 
         let second_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            name,
+            username: name,
             password,
         }).to_request();
         let second_response = test::call_service(&app, second_request).await;
@@ -308,7 +308,7 @@ mod tests {
                 .await;
 
         let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            name: name.clone(),
+            username: name.clone(),
             password: password.clone(),
         }).to_request();
         try_call_service(&app, register_request, "Unable to register account").await;
