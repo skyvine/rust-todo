@@ -1,4 +1,11 @@
 mod schema;
+mod database;
+
+use database::{
+    auth_key_to_user,
+    establish_connection,
+    user_exists,
+};
 
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 use argon2::{
@@ -11,10 +18,9 @@ use diesel::prelude::*;
 use dotenvy::dotenv;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::env;
 use tracing::{event, span, Level};
 use uuid::Uuid;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{ZeroizeOnDrop};
 
 /// An endpoint to checks that the server is up.
 /// 
@@ -24,57 +30,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 async fn is_alive() -> impl Responder {
     event!(Level::TRACE, "Responding to is_alive check");
     HttpResponse::Ok()
-}
-
-// This struct is needed to set the return type in the query in user_exists, but the fields are not
-// (yet) used. Ignore the dead code warning because the fields need to exist for diesel to validate
-// the struct.
-#[allow(dead_code)]
-#[derive(Clone, Queryable, Selectable, ZeroizeOnDrop)]
-#[diesel(table_name = crate::schema::users)]
-#[diesel(check_for_backend(diesel::pg::Pg))]
-struct User {
-    id: i32,
-    username: String,
-    password: String,
-}
-
-// Again, this struct exists so that queries can be made but not all of the members are currently
-// used.
-#[allow(dead_code)]
-#[derive(Queryable, Selectable, ZeroizeOnDrop)]
-#[diesel(table_name = crate::schema::auth_keys)]
-#[diesel(belongs_to(User))]
-#[diesel(check_for_backend(diesel::pg::Pg))]
-struct AuthKey {
-    id:      i32,
-    user_id: i32,
-    key:     String
-}
-
-/// Open a new connection to the database. The DATABASE_URL environment variable must be defined and
-/// point to a running database.
-fn establish_connection() -> Result<PgConnection, ConnectionError> {
-    let mut database_url = match env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(_) => {
-            let msg = String::from("DATABASE_URL is not set, unable to establish connection");
-            event!(Level::ERROR, msg);
-            return Err(ConnectionError::InvalidConnectionUrl(msg))
-        }
-    };
-
-    let connection = PgConnection::establish(&database_url);
-    database_url.zeroize();
-    connection
-}
-
-/// Returns true if a user with the given name exists, false otherwise.
-fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, diesel::result::Error> {
-    use self::schema::users::dsl::*;
-    let query = users.filter(username.eq(name)).select(User::as_select());
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-    Ok(!query.load(connection)?.is_empty())
 }
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
@@ -157,19 +112,6 @@ async fn register_account(mut account_info: actix_web::web::Json<UserRegistratio
     }
 }
 
-fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, diesel::result::Error> {
-    use crate::schema::auth_keys::dsl::*;
-    use crate::schema::users::dsl::*;
-
-    let query = auth_keys.inner_join(users)
-        .filter(key.eq(auth_key))
-        .select(( AuthKey::as_select(), User::as_select()));
-
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-
-    Ok(query.load::<(AuthKey, User)>(connection)?[0].1.clone())
-}
-
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct WhoAmIPayload {
     auth_key: String
@@ -185,7 +127,7 @@ async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder 
     match connection {
         Ok(mut conn) => 
             match auth_key_to_user(&payload.auth_key, &mut conn) {
-                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.username}))),
+                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
                 Err(e) => {
                     event!(Level::ERROR, "Unable to look up user: {e}");
                     HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
@@ -218,17 +160,17 @@ async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
         Ok(mut conn) => {
             let query = users
                 .filter(username.eq(&payload.username))
-                .select(User::as_select());
+                .select(database::User::as_select());
             event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-            match query.load::<User>(&mut conn) {
+            match query.load::<database::User>(&mut conn) {
                 Ok(found_users) => {
                     let user = &found_users[0];
 
-                    let hashed_password = match PasswordHash::new(&user.password) {
+                    let hashed_password = match PasswordHash::new(user.ref_password()) {
                         Ok(ph) => ph,
                         Err(e) => {
-                            event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.password);
+                            event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
                             return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
                         }
                     };
@@ -237,7 +179,7 @@ async fn login(payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
                         Ok(_) => {
                             let new_key = Uuid::new_v4();
                             let query = diesel::insert_into(auth_keys)
-                                .values((user_id.eq(user.id), key.eq(format!("{new_key}"))));
+                                .values((user_id.eq(user.ref_id()), key.eq(format!("{new_key}"))));
                             event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
                             match query.execute(&mut conn) {
