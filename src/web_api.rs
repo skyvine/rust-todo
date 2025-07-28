@@ -5,7 +5,7 @@ use crate::database::{
     establish_connection,
     user_exists,
 };
-use crate::domain_types::CleartextPassword;
+use crate::domain_types::{CleartextPassword, Username};
 
 use actix_web::{get, post, HttpResponse, Responder};
 use argon2::{
@@ -55,10 +55,16 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
             event!(Level::TRACE, "Established connection to database.");
 
             // move not allowed in .values() call below, avoid cloning by replacing
-            let un = std::mem::take(&mut account_info.username);
+            let un = match Username::new(std::mem::take(&mut account_info.username)) {
+                Ok(un) => un,
+                Err(message) => {
+                    event!(Level::ERROR, "{message}");
+                    return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+                }
+            };
             let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
 
-            match user_exists(&un, &mut conn) {
+            match user_exists(un.as_ref(), &mut conn) {
                 Ok(false) => {
                     let slt = SaltString::generate(&mut OsRng);
 
@@ -73,7 +79,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
                     };
 
                     let query =
-                        diesel::insert_into(users).values((username.eq(un), password.eq(hashed_password)));
+                        diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
 
                     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
