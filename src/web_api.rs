@@ -5,7 +5,7 @@ use crate::database::{
     establish_connection,
     user_exists,
 };
-use crate::domain_types::ZeroizedPassword;
+use crate::domain_types::CleartextPassword;
 
 use actix_web::{get, post, HttpResponse, Responder};
 use argon2::{
@@ -56,7 +56,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
 
             // move not allowed in .values() call below, avoid cloning by replacing
             let un = std::mem::take(&mut account_info.name);
-            let pw = ZeroizedPassword(std::mem::take(&mut account_info.password));
+            let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
 
             match user_exists(&un, &mut conn) {
                 Ok(false) => {
@@ -64,7 +64,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
 
                     // The default paramaters from Argon2 match one of the recommendations from
                     // OWASP (see https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id)
-                    let hashed_password = match Argon2::default().hash_password(pw.0.as_bytes(), &slt) {
+                    let hashed_password = match Argon2::default().hash_password(pw.as_ref().as_bytes(), &slt) {
                         Ok(h) => h.to_string(),
                         Err(e) => {
                             event!(Level::ERROR, "Unable to hash password: {e:?}");
