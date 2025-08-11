@@ -3,35 +3,6 @@ use std::env;
 use tracing::{event, Level};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-// This struct is needed to set the return type in the query in user_exists, but the fields are not
-// (yet) used. Ignore the dead code warning because the fields need to exist for diesel to validate
-// the struct.
-/// A complete entry from the users table in the database
-#[derive(Clone, Queryable, Selectable, ZeroizeOnDrop)]
-#[diesel(table_name = crate::schema::users)]
-#[diesel(check_for_backend(diesel::pg::Pg))]
-pub struct User {
-    id: i32,
-    username: String,
-    password: String,
-}
-
-impl User {
-    pub fn ref_id(&self) -> &i32 {
-        &self.id
-    }
-
-    pub fn ref_username(&self) -> &String {
-        &self.username
-    }
-
-    pub fn ref_password(&self) -> &String {
-        &self.password
-    }
-}
-
-// Again, this struct exists so that queries can be made but not all of the members are currently
-// used.
 /// A complete entry from the auth_keys table in the database
 #[derive(Queryable, Selectable, ZeroizeOnDrop)]
 #[diesel(table_name = crate::schema::auth_keys)]
@@ -54,6 +25,30 @@ pub struct Task {
     owner:       i32,
     title:       String,
     description: Option<String>,
+}
+
+/// A complete entry from the users table in the database
+#[derive(Clone, Queryable, Selectable, ZeroizeOnDrop)]
+#[diesel(table_name = crate::schema::users)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct User {
+    id: i32,
+    username: String,
+    password: String,
+}
+
+impl User {
+    pub fn ref_id(&self) -> &i32 {
+        &self.id
+    }
+
+    pub fn ref_username(&self) -> &String {
+        &self.username
+    }
+
+    pub fn ref_password(&self) -> &String {
+        &self.password
+    }
 }
 
 pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, diesel::result::Error> {
