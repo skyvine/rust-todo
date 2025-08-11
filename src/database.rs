@@ -45,6 +45,19 @@ pub struct AuthKey {
     key:     String
 }
 
+/// A complete entry from the tasks table in the database
+#[allow(dead_code)]
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = crate::schema::tasks)]
+#[diesel(belongs_to(User))]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct Task {
+    id:          i32,
+    owner:       i32,
+    title:       String,
+    description: Option<String>,
+}
+
 pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, diesel::result::Error> {
     use crate::schema::auth_keys::dsl::*;
     use crate::schema::users::dsl::*;

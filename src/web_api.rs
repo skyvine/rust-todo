@@ -5,7 +5,7 @@ use crate::database::{
     establish_connection,
     user_exists,
 };
-use crate::domain_types::{CleartextPassword, Username};
+use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
 use actix_web::{get, post, HttpResponse, Responder};
 use argon2::{
@@ -217,6 +217,56 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
     }
 }
 
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct AddTaskPayload {
+    auth_key:    String,
+    title:       String,
+    description: Option<String>,
+}
+
+#[post("/add_task")]
+pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
+    use crate::schema::tasks::dsl;
+
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
+
+    let title = TaskTitle::new(std::mem::take(&mut payload.title));
+    let description = TaskDescription::new(std::mem::take(&mut payload.description.as_mut().unwrap_or(&mut String::default())));
+
+    let mut connection = match establish_connection() {
+        Ok(connection) => connection,
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+        }
+    };
+
+    let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+        Ok(user) => user,
+        Err(e) => {
+            event!(Level::ERROR, "Unable to retrieve user based on auth key: {e:?}");
+            return HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+        }
+    };
+
+    let query =
+        diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()), dsl::title.eq(title.as_ref()), dsl::description.eq(description.as_ref())));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.execute(&mut connection) {
+        Ok(_) => {
+            event!(Level::TRACE, "Query succeeded");
+            HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use actix_http::Request;
@@ -343,5 +393,35 @@ mod tests {
 
         let response_name = extract_json_string(whoami_response, "username");
         assert_eq!(name, response_name);
+    }
+
+    #[actix_web::test]
+    async fn can_add_task() {
+        let username = String::from("can-add-task-username");
+        let password = String::from("can-add-task-password");
+        let app =
+            test::init_service(App::new()
+                .service(super::add_task)
+                .service(super::login)
+                .service(super::register_account))
+                .await;
+
+        let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
+            username: username.clone(),
+            password: password.clone(),
+        }).to_request();
+        try_call_service(&app, register_request, "Unable to register account").await;
+
+        let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
+            username: username.clone(),
+            password: password.clone(),
+        }).to_request();
+        let login_response = try_call_service(&app, login_request, "Unable to login").await;
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key, title: String::from("test title"), description: Some(String::from("test description"))
+        }).to_request();
+        try_call_service(&app, add_task_request, "Unable to add task").await;
     }
 }

@@ -12,8 +12,8 @@ diesel::table! {
 diesel::table! {
     tasks (id) {
         id -> Int4,
-        owner -> Nullable<Int4>,
-        title -> Nullable<Text>,
+        owner -> Int4,
+        title -> Text,
         description -> Nullable<Text>,
     }
 }

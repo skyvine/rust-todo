@@ -32,3 +32,31 @@ impl AsRef<String> for Username {
         &self.0
     }
 }
+
+pub(crate) struct TaskDescription(String);
+
+impl TaskDescription {
+    pub(crate) fn new(description: String) -> Self {
+        Self(description)
+    }
+}
+
+impl AsRef<String> for TaskDescription {
+    fn as_ref(&self) -> &String {
+        &self.0
+    }
+}
+
+pub(crate) struct TaskTitle(String);
+
+impl TaskTitle {
+    pub(crate) fn new(title: String) -> Self {
+        Self(title)
+    }
+}
+
+impl AsRef<String> for TaskTitle {
+    fn as_ref(&self) -> &String {
+        &self.0
+    }
+}
