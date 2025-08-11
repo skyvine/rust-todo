@@ -10,14 +10,14 @@ use dotenvy::dotenv;
 pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
     dotenv().ok();
     HttpServer::new(|| {
-            App::new()
+        App::new()
             .service(web_api::is_alive)
             .service(web_api::register_account)
             .service(web_api::login)
             .service(web_api::whoami)
-        })
-    .bind((ip_address, port))?
-    .run()
-    .await
+    })
+        .bind((ip_address, port))?
+        .run()
+        .await
 }
 
