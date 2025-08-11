@@ -232,7 +232,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
     let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
 
     let title = TaskTitle::new(std::mem::take(&mut payload.title));
-    let description = TaskDescription::new(std::mem::take(&mut payload.description.as_mut().unwrap_or(&mut String::default())));
+    let description = TaskDescription::new(std::mem::take(payload.description.as_mut().unwrap_or(&mut String::default())));
 
     let mut connection = match establish_connection() {
         Ok(connection) => connection,
