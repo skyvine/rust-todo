@@ -7,7 +7,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 // (yet) used. Ignore the dead code warning because the fields need to exist for diesel to validate
 // the struct.
 /// A complete entry from the users table in the database
-#[allow(dead_code)]
 #[derive(Clone, Queryable, Selectable, ZeroizeOnDrop)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -34,7 +33,6 @@ impl User {
 // Again, this struct exists so that queries can be made but not all of the members are currently
 // used.
 /// A complete entry from the auth_keys table in the database
-#[allow(dead_code)]
 #[derive(Queryable, Selectable, ZeroizeOnDrop)]
 #[diesel(table_name = crate::schema::auth_keys)]
 #[diesel(belongs_to(User))]
