@@ -38,8 +38,12 @@ impl AsRef<String> for TaskDescription {
 pub(crate) struct TaskTitle(String);
 
 impl TaskTitle {
-    pub(crate) fn new(title: String) -> Self {
-        Self(title)
+    pub(crate) fn new(title: String) -> Result<Self, String> {
+        if title.trim().is_empty() {
+            Err(String::from("Title is empty or contains only whitespace."))
+        } else {
+            Ok(Self(title))
+        }
     }
 }
 

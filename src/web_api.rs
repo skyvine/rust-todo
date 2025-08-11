@@ -231,7 +231,13 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
 
-    let title = TaskTitle::new(std::mem::take(&mut payload.title));
+    let title = match TaskTitle::new(std::mem::take(&mut payload.title)) {
+        Ok(title) => title,
+        Err(e) => {
+            event!(Level::ERROR, "{e:?}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
+        }
+    };
     let description = TaskDescription::new(std::mem::take(payload.description.as_mut().unwrap_or(&mut String::default())));
 
     let mut connection = match establish_connection() {
