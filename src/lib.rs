@@ -6,17 +6,22 @@ mod web_api;
 use actix_web::{App, HttpServer};
 use dotenvy::dotenv;
 
+macro_rules! build_app {
+    () => {
+            App::new()
+                .service(crate::web_api::add_task)
+                .service(crate::web_api::is_alive)
+                .service(crate::web_api::register_account)
+                .service(crate::web_api::login)
+                .service(crate::web_api::whoami)
+    }
+}
+pub(crate) use build_app;
+
 /// Run the server on the given IP address and port.
 pub async fn run(ip_address: String, port: u16) -> std::io::Result<()> {
     dotenv().ok();
-    HttpServer::new(|| {
-        App::new()
-            .service(web_api::add_task)
-            .service(web_api::is_alive)
-            .service(web_api::register_account)
-            .service(web_api::login)
-            .service(web_api::whoami)
-    })
+    HttpServer::new(|| { build_app!() })
         .bind((ip_address, port))?
         .run()
         .await
