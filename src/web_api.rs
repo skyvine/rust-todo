@@ -277,6 +277,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
 mod tests {
     use actix_http::Request;
     use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App};
+    use crate::build_app;
     use ctor::ctor;
     use tracing_subscriber::{fmt, EnvFilter};
 
@@ -328,7 +329,7 @@ mod tests {
 
     #[actix_web::test]
     async fn is_alive() {
-        let app = test::init_service(App::new().service(super::is_alive)).await;
+        let app = test::init_service(build_app!()).await;
         let request = test::TestRequest::get().uri("/is_alive").to_request();
         let response = try_call_service(&app, request, "Is alive check failed").await;
         assert_eq!(response.into_body().size(), actix_web::body::BodySize::Sized(0));
@@ -336,7 +337,7 @@ mod tests {
 
     #[actix_web::test]
     async fn regitering_account_is_successful() {
-        let app = test::init_service(App::new().service(super::register_account)).await;
+        let app = test::init_service(build_app!()).await;
         let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: String::from("new-name"),
             password: String::from("new-password")
@@ -349,7 +350,7 @@ mod tests {
         let name = String::from("duplicated-name");
         let password = String::from("duplicated-password");
 
-        let app = test::init_service(App::new().service(super::register_account)).await;
+        let app = test::init_service(build_app!()).await;
         let first_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: name.clone(),
             password: password.clone(),
@@ -373,11 +374,7 @@ mod tests {
         let name = String::from("auth-key-registered-name");
         let password = String::from("auth-key-registered-password");
         let app =
-            test::init_service(App::new()
-                .service(super::login)
-                .service(super::register_account)
-                .service(super::whoami))
-                .await;
+            test::init_service(build_app!()).await;
 
         let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: name.clone(),
@@ -406,11 +403,7 @@ mod tests {
         let username = String::from("can-add-task-username");
         let password = String::from("can-add-task-password");
         let app =
-            test::init_service(App::new()
-                .service(super::add_task)
-                .service(super::login)
-                .service(super::register_account))
-                .await;
+            test::init_service(build_app!()).await;
 
         let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: username.clone(),
