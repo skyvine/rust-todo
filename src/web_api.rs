@@ -284,6 +284,7 @@ mod tests {
     #[ctor]
     unsafe fn global_init() {
         use crate::schema::auth_keys::dsl::*;
+        use crate::schema::tasks::dsl::*;
         use crate::schema::users::dsl::*;
         use super::RunQueryDsl;
 
@@ -297,6 +298,12 @@ mod tests {
             Ok(_) => (),
             Err(e) => panic!("Unable to delete auth_keys entries: {e:?}")
         };
+
+        match diesel::delete(tasks).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
+            Ok(_) => (),
+            Err(e) => panic!("Unable to delete tasks entries: {e:?}")
+        };
+
         match diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
             Ok(_) => (),
             Err(e) => panic!("Unable to delete users entries: {e:?}")
