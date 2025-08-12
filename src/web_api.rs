@@ -290,9 +290,17 @@ mod tests {
         // Print log messages to help debug failed tests
         fmt().event_format(fmt::format().pretty()).with_env_filter(EnvFilter::from_default_env()).init();
 
+        tracing::event!(tracing::Level::TRACE, "Deleting all entries in tables.");
+
         // The tests depend on the state of the database, so ensure we always start with a clean slate.
-        diesel::delete(auth_keys).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
-        diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database."));
+        match diesel::delete(auth_keys).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
+            Ok(_) => (),
+            Err(e) => panic!("Unable to delete auth_keys entries: {e:?}")
+        };
+        match diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
+            Ok(_) => (),
+            Err(e) => panic!("Unable to delete users entries: {e:?}")
+        };
     }
 
     /// Call the service, but panic if the response does not indicate success
