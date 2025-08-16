@@ -319,14 +319,6 @@ mod tests {
         response
     }
 
-    /// Call the service, but panic if the response does not indicate success
-    async fn try_call_service<App: Service<Request, Response = ServiceResponse>>(app: &App, request: Request, message: &str) -> ServiceResponse
-    where <App as Service<Request>>::Error: std::fmt::Debug
-    {
-        let response = test::call_service(app, request).await;
-        assert_response_success(response, message)
-    }
-
     async fn register<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
         let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: String::from(username),
@@ -365,7 +357,7 @@ mod tests {
     async fn is_alive() {
         let app = test::init_service(build_app!()).await;
         let request = test::TestRequest::get().uri("/is_alive").to_request();
-        let response = try_call_service(&app, request, "Is alive check failed").await;
+        let response = assert_response_success(test::call_service(&app, request).await, "Is alive check failed.");
         assert_eq!(response.into_body().size(), actix_web::body::BodySize::Sized(0));
     }
 
@@ -407,7 +399,7 @@ mod tests {
         let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
             auth_key,
         }).to_request();
-        let whoami_response = try_call_service(&app, whoami_request, "Whoami request failed").await;
+        let whoami_response = assert_response_success(test::call_service(&app, whoami_request).await, "Whoami request failed.");
 
         let response_name = extract_json_string(whoami_response, "username");
         assert_eq!(username, response_name);
@@ -428,6 +420,6 @@ mod tests {
         let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
             auth_key, title: String::from("test title"), description: Some(String::from("test description"))
         }).to_request();
-        try_call_service(&app, add_task_request, "Unable to add task").await;
+        assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
     }
 }
