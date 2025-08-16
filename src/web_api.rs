@@ -335,6 +335,14 @@ mod tests {
         test::call_service(&app, request).await
     }
 
+    async fn login<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
+        let request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
+            username: String::from(username),
+            password: String::from(password),
+        }).to_request();
+        test::call_service(&app, request).await
+    }
+
     fn extract_json_string(response: ServiceResponse, key: &str) -> String {
         match response.into_body().try_into_bytes() {
             Ok(bytes) =>
@@ -393,11 +401,7 @@ mod tests {
 
         assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
 
-        let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
-            username: username.clone(),
-            password: password.clone(),
-        }).to_request();
-        let login_response = try_call_service(&app, login_request, "Unable to login").await;
+        let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
         let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
@@ -418,11 +422,7 @@ mod tests {
 
         assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
 
-        let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
-            username: username.clone(),
-            password: password.clone(),
-        }).to_request();
-        let login_response = try_call_service(&app, login_request, "Unable to login").await;
+        let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
         let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
