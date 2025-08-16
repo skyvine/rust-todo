@@ -61,7 +61,12 @@ pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Res
 
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-    Ok(query.load::<(AuthKey, User)>(connection)?[0].1.clone())
+    let results = query.load::<(AuthKey, User)>(connection)?;
+    if results.is_empty() {
+        Err(diesel::result::Error::NotFound)
+    } else {
+        Ok(results[0].1.clone())
+    }
 }
 
 /// Open a new connection to the database. The DATABASE_URL environment variable must be defined and
