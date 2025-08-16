@@ -423,4 +423,18 @@ mod tests {
         }).to_request();
         assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
     }
+
+    #[actix_web::test]
+    async fn cannot_add_task_without_valid_auth_key() {
+        let app = test::init_service(build_app!()).await;
+        let request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: String::from("this-is-not-a-valid-auth-key"), title: String::from("test title"), description: Some(String::from("test description"))
+        }).to_request();
+        let response = test::call_service(&app, request).await;
+        if !response.status().is_client_error() {
+            let formatted_response = format!("{response:?}");
+            let body = response.into_body();
+            panic!("Response did not indicate client failure: {formatted_response}{body:?}")
+        }
+    }
 }
