@@ -313,6 +313,7 @@ mod tests {
     fn assert_response_success(response: ServiceResponse, message: &str) -> ServiceResponse{
         if !response.status().is_success() {
             let formatted_response = format!("{response:?}");
+            // there is currently no "as_body" method or similar, so I have to take ownership and return if I want to print the body.
             let body = response.into_body();
             panic!("{message}: {formatted_response}{body:?}")
         }
