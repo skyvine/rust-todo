@@ -310,18 +310,29 @@ mod tests {
         };
     }
 
+    fn assert_response_success(response: ServiceResponse, message: &str) -> ServiceResponse{
+        if !response.status().is_success() {
+            let formatted_response = format!("{response:?}");
+            let body = response.into_body();
+            panic!("{message}: {formatted_response}{body:?}")
+        }
+        response
+    }
+
     /// Call the service, but panic if the response does not indicate success
     async fn try_call_service<App: Service<Request, Response = ServiceResponse>>(app: &App, request: Request, message: &str) -> ServiceResponse
     where <App as Service<Request>>::Error: std::fmt::Debug
     {
         let response = test::call_service(app, request).await;
-        if !response.status().is_success() {
-            let formatted_response = format!("{response:?}");
-            let body = response.into_body();
-            panic!("{message}: {formatted_response}{body:?}")
-        } else {
-            response
-        }
+        assert_response_success(response, message)
+    }
+
+    async fn register<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
+        let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
+            username: String::from(username),
+            password: String::from(password)
+        }).to_request();
+        test::call_service(&app, request).await
     }
 
     fn extract_json_string(response: ServiceResponse, key: &str) -> String {
@@ -353,52 +364,37 @@ mod tests {
     #[actix_web::test]
     async fn regitering_account_is_successful() {
         let app = test::init_service(build_app!()).await;
-        let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            username: String::from("new-name"),
-            password: String::from("new-password")
-        }).to_request();
-        try_call_service(&app, request, "Registration request failed").await;
+        let response = register(app, "register-account-is-successful-name", "register-account-is-successful-password").await;
+        assert_response_success(response, "Error status code");
     }
 
     #[actix_web::test]
     async fn duplicate_username_fails() {
         let name = String::from("duplicated-name");
         let password = String::from("duplicated-password");
-
         let app = test::init_service(build_app!()).await;
-        let first_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            username: name.clone(),
-            password: password.clone(),
-        }).to_request();
-        try_call_service(&app, first_request, "Registration failed").await;
 
-        let second_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            username: name,
-            password,
-        }).to_request();
-        let second_response = test::call_service(&app, second_request).await;
-        if !second_response.status().is_client_error() {
-            let formatted_response = format!("{second_response:?}");
-            let body = second_response.into_body();
-            panic!("Response indicated success: {formatted_response}{body:?}")
+        assert_response_success(register(&app, name.as_str(), password.as_str()).await, "Failed to register the account once.");
+
+        let response = register(&app, name.as_str(), password.as_str()).await;
+        if !response.status().is_client_error() {
+            let formatted_response = format!("{response:?}");
+            let body = response.into_body();
+            panic!("Response did not indicate client failure: {formatted_response}{body:?}")
         }
     }
 
     #[actix_web::test]
     async fn auth_key_is_recognized() {
-        let name = String::from("auth-key-registered-name");
+        let username = String::from("auth-key-registered-name");
         let password = String::from("auth-key-registered-password");
         let app =
             test::init_service(build_app!()).await;
 
-        let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            username: name.clone(),
-            password: password.clone(),
-        }).to_request();
-        try_call_service(&app, register_request, "Unable to register account").await;
+        assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
 
         let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
-            username: name.clone(),
+            username: username.clone(),
             password: password.clone(),
         }).to_request();
         let login_response = try_call_service(&app, login_request, "Unable to login").await;
@@ -410,7 +406,7 @@ mod tests {
         let whoami_response = try_call_service(&app, whoami_request, "Whoami request failed").await;
 
         let response_name = extract_json_string(whoami_response, "username");
-        assert_eq!(name, response_name);
+        assert_eq!(username, response_name);
     }
 
     #[actix_web::test]
@@ -420,11 +416,7 @@ mod tests {
         let app =
             test::init_service(build_app!()).await;
 
-        let register_request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            username: username.clone(),
-            password: password.clone(),
-        }).to_request();
-        try_call_service(&app, register_request, "Unable to register account").await;
+        assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
 
         let login_request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
             username: username.clone(),
