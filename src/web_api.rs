@@ -191,8 +191,6 @@ struct AddTaskPayload {
 
 #[post("/add_task")]
 pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
-    use crate::schema::tasks::dsl;
-
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
 
@@ -221,20 +219,9 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
         }
     };
 
-    let query =
-        diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()), dsl::title.eq(title.as_ref()), dsl::description.eq(description.as_ref())));
-
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-
-    match query.execute(&mut connection) {
-        Ok(_) => {
-            event!(Level::TRACE, "Query succeeded");
-            HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-        },
-        Err(e) => {
-            event!(Level::ERROR, "Query Failed: {e}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-        }
+    match crate::database::add_task(&owner, &title, &description, &mut connection) {
+        Ok(()) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+        Err(e) => e.into_http_response(&format!("{request_id}")),
     }
 }
 

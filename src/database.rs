@@ -1,4 +1,4 @@
-use crate::domain_types::{CleartextPassword, Username};
+use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 use argon2::{
     password_hash::PasswordVerifier,
     Argon2
@@ -61,6 +61,26 @@ impl User {
 
     pub fn ref_password(&self) -> &String {
         &self.password
+    }
+}
+
+pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, connection: &mut PgConnection) -> Result<(), ApplicationDatabaseError> {
+    use crate::schema::tasks::dsl;
+
+    let query =
+        diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()), dsl::title.eq(title.as_ref()), dsl::description.eq(description.as_ref())));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.execute(connection) {
+        Ok(_) => {
+            event!(Level::TRACE, "Query succeeded");
+            Ok(())
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            Err(ApplicationDatabaseError::DieselError(e))
+        }
     }
 }
 
