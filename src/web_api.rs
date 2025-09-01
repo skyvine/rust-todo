@@ -50,34 +50,34 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
 
+    // move not allowed in .values() call below, avoid cloning by replacing
+    let un = match Username::new(std::mem::take(&mut account_info.username)) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+        }
+    };
+    let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
+
+    let slt = SaltString::generate(&mut OsRng);
+
+    // The default paramaters from Argon2 match one of the recommendations from
+    // OWASP (see https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id)
+    let hashed_password = match Argon2::default().hash_password(pw.as_ref().as_bytes(), &slt) {
+        Ok(h) => h.to_string(),
+        Err(e) => {
+            event!(Level::ERROR, "Unable to hash password: {e:?}");
+            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+        }
+    };
+
     match establish_connection() {
         Ok(mut conn) => {
             event!(Level::TRACE, "Established connection to database.");
 
-            // move not allowed in .values() call below, avoid cloning by replacing
-            let un = match Username::new(std::mem::take(&mut account_info.username)) {
-                Ok(un) => un,
-                Err(message) => {
-                    event!(Level::ERROR, "{message}");
-                    return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}")})));
-                }
-            };
-            let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
-
             match user_exists(un.as_ref(), &mut conn) {
                 Ok(false) => {
-                    let slt = SaltString::generate(&mut OsRng);
-
-                    // The default paramaters from Argon2 match one of the recommendations from
-                    // OWASP (see https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id)
-                    let hashed_password = match Argon2::default().hash_password(pw.as_ref().as_bytes(), &slt) {
-                        Ok(h) => h.to_string(),
-                        Err(e) => {
-                            event!(Level::ERROR, "Unable to hash password: {e:?}");
-                            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
-                        }
-                    };
-
                     let query =
                         diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
 
