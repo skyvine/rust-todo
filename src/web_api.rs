@@ -15,7 +15,6 @@ use argon2::{
     },
     Argon2
 };
-use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{event, span, Level};
@@ -239,7 +238,7 @@ mod tests {
         use crate::schema::auth_keys::dsl::*;
         use crate::schema::tasks::dsl::*;
         use crate::schema::users::dsl::*;
-        use super::RunQueryDsl;
+        use diesel::prelude::*;
 
         // Print log messages to help debug failed tests
         fmt().event_format(fmt::format().pretty()).with_env_filter(EnvFilter::from_default_env()).init();
