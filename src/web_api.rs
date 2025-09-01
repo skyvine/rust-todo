@@ -1,9 +1,9 @@
 use crate::database::{
-    self,
-
     add_user,
     auth_key_to_user,
     establish_connection,
+    get_new_auth_key,
+    get_user_by_name,
     ApplicationDatabaseError,
 };
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
@@ -11,7 +11,7 @@ use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Usernam
 use actix_web::{get, post, HttpResponse, Responder};
 use argon2::{
     password_hash::{
-        rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString
+        rand_core::OsRng, PasswordHash, PasswordHasher, SaltString
     },
     Argon2
 };
@@ -30,6 +30,26 @@ use zeroize::{ZeroizeOnDrop};
 pub async fn is_alive() -> impl Responder {
     event!(Level::TRACE, "Responding to is_alive check");
     HttpResponse::Ok()
+}
+
+impl ApplicationDatabaseError {
+    fn into_http_response(self, request_id: &String) -> HttpResponse {
+        match self {
+            ApplicationDatabaseError::DieselError(e) => {
+                event!(Level::ERROR, "Diesel error: {e}");
+                HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
+            }
+            ApplicationDatabaseError::InvalidPassword => {
+                event!(Level::ERROR, "Invalid password");
+                HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
+            }
+            ApplicationDatabaseError::QueryFailed(e) => {
+                event!(Level::ERROR, "Query failed: {e}");
+                HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
+            },
+            ApplicationDatabaseError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
@@ -77,17 +97,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
 
             match add_user(&un, &hashed_password, &mut conn) {
                 Ok(()) => HttpResponse::Created().finish(),
-                Err(e) => match e {
-                    ApplicationDatabaseError::DieselError(e) => {
-                        event!(Level::ERROR, "Unable to add user: {e}");
-                        HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-                    }
-                    ApplicationDatabaseError::QueryFailed(e) => {
-                        event!(Level::ERROR, "Query failed: {e}");
-                        HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-                    },
-                    ApplicationDatabaseError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
-                }
+                Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         },
 
@@ -132,9 +142,6 @@ struct LoginPayload {
 
 #[post("/login")]
 pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
-    use crate::schema::auth_keys::dsl::*;
-    use crate::schema::users::dsl::*;
-
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
 
@@ -150,55 +157,27 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
 
     match establish_connection() {
         Ok(mut conn) => {
-            let query = users
-                .filter(username.eq(un.as_ref()))
-                .select(database::User::as_select());
-            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+            let user = match get_user_by_name(&un, &mut conn) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
 
-            match query.load::<database::User>(&mut conn) {
-                Ok(found_users) => {
-                    let user = &found_users[0];
-
-                    let hashed_password = match PasswordHash::new(user.ref_password()) {
-                        Ok(ph) => ph,
-                        Err(e) => {
-                            event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
-                            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
-                        }
-                    };
-
-                    match Argon2::default().verify_password(pw.as_ref().as_bytes(), &hashed_password) {
-                        Ok(_) => {
-                            let new_key = Uuid::new_v4();
-                            let query = diesel::insert_into(auth_keys)
-                                .values((user_id.eq(user.ref_id()), key.eq(format!("{new_key}"))));
-                            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-
-                            match query.execute(&mut conn) {
-                                Ok(_) => {
-                                    HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{}", new_key)})))
-                                },
-                                Err(e) => {
-                                    event!(Level::ERROR, "Unable to insert new auth key: {e}");
-                                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-                                }
-
-                            }
-                        },
-                        Err(_) => {
-                            HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-                        }
-                    }
-                },
+            let hashed_password = match PasswordHash::new(user.ref_password()) {
+                Ok(ph) => ph,
                 Err(e) => {
-                    event!(Level::ERROR, "Query failed: {e}");
-                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
+                    return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
                 }
+            };
+
+            match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
+                Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{auth_key}")}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
         }
     }
 }

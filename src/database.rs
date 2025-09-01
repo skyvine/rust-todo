@@ -1,11 +1,17 @@
-use crate::domain_types::Username;
+use crate::domain_types::{CleartextPassword, Username};
+use argon2::{
+    password_hash::PasswordVerifier,
+    Argon2
+};
 use diesel::prelude::*;
 use std::env;
 use tracing::{event, Level};
+use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub enum ApplicationDatabaseError {
     DieselError(diesel::result::Error),
+    InvalidPassword,
     QueryFailed(String),
     UserExists,
 }
@@ -119,6 +125,51 @@ pub fn establish_connection() -> Result<PgConnection, ConnectionError> {
     let connection = PgConnection::establish(&database_url);
     database_url.zeroize();
     connection
+}
+
+pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_password: &argon2::PasswordHash, connection: &mut PgConnection) -> Result<Uuid, ApplicationDatabaseError> {
+    use crate::schema::auth_keys::dsl::*;
+
+    match Argon2::default().verify_password(given_password.as_ref().as_bytes(), hashed_password) {
+        Ok(_) => {
+            let new_key = Uuid::new_v4();
+            let query = diesel::insert_into(auth_keys)
+                .values((user_id.eq(user.ref_id()), key.eq(format!("{new_key}"))));
+            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+            match query.execute(connection) {
+                Ok(_) => Ok(new_key),
+                Err(e) => {
+                    event!(Level::ERROR, "Unable to insert new auth key: {e}");
+                    Err(ApplicationDatabaseError::DieselError(e))
+                }
+
+            }
+        },
+        Err(_) => {
+            Err(ApplicationDatabaseError::InvalidPassword)
+        }
+    }
+
+}
+
+pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<User, ApplicationDatabaseError> {
+    use crate::schema::users::dsl::*;
+
+    let query = users
+        .filter(username.eq(un.as_ref()))
+        .select(User::as_select());
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.load::<User>(connection) {
+        Ok(found_users) => {
+            Ok(found_users[0].clone())
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query failed while getting user by name: {e}");
+            Err(ApplicationDatabaseError::DieselError(e))
+        }
+    }
 }
 
 /// Returns true if a user with the given name exists, false otherwise.
