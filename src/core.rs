@@ -9,7 +9,7 @@ use tracing::{event, Level};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-pub enum ApplicationDatabaseError {
+pub enum ApplicationError {
     DieselError(diesel::result::Error),
     InvalidAuthKey,
     InvalidPassword,
@@ -65,7 +65,7 @@ impl User {
     }
 }
 
-pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, connection: &mut PgConnection) -> Result<(), ApplicationDatabaseError> {
+pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 
     let query =
@@ -80,12 +80,12 @@ pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, 
         },
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
-            Err(ApplicationDatabaseError::DieselError(e))
+            Err(ApplicationError::DieselError(e))
         }
     }
 }
 
-pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConnection) -> Result<(), ApplicationDatabaseError> {
+pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::users::dsl::*;
 
     match user_exists(un.as_ref(), connection) {
@@ -102,18 +102,18 @@ pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConn
                     Ok(())
                 },
                 Err(e) => {
-                    Err(ApplicationDatabaseError::QueryFailed(format!("{e}")))
+                    Err(ApplicationError::QueryFailed(format!("{e}")))
                 }
             }
         },
 
-        Ok(true) => Err(ApplicationDatabaseError::UserExists),
+        Ok(true) => Err(ApplicationError::UserExists),
 
         Err(e) => Err(e)
     }
 }
 
-pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, ApplicationDatabaseError> {
+pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
     use crate::schema::users::dsl::*;
 
@@ -126,12 +126,12 @@ pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Res
     match query.load::<(AuthKey, User)>(connection) {
         Ok(results) => {
             if results.is_empty() {
-                Err(ApplicationDatabaseError::InvalidAuthKey)
+                Err(ApplicationError::InvalidAuthKey)
             } else {
                 Ok(results[0].1.clone())
             }
         },
-        Err(e) => Err(ApplicationDatabaseError::DieselError(e))
+        Err(e) => Err(ApplicationError::DieselError(e))
     }
 }
 
@@ -152,7 +152,7 @@ pub fn establish_connection() -> Result<PgConnection, ConnectionError> {
     connection
 }
 
-pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_password: &argon2::PasswordHash, connection: &mut PgConnection) -> Result<Uuid, ApplicationDatabaseError> {
+pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_password: &argon2::PasswordHash, connection: &mut PgConnection) -> Result<Uuid, ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
 
     match Argon2::default().verify_password(given_password.as_ref().as_bytes(), hashed_password) {
@@ -166,19 +166,19 @@ pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_
                 Ok(_) => Ok(new_key),
                 Err(e) => {
                     event!(Level::ERROR, "Unable to insert new auth key: {e}");
-                    Err(ApplicationDatabaseError::DieselError(e))
+                    Err(ApplicationError::DieselError(e))
                 }
 
             }
         },
         Err(_) => {
-            Err(ApplicationDatabaseError::InvalidPassword)
+            Err(ApplicationError::InvalidPassword)
         }
     }
 
 }
 
-pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<User, ApplicationDatabaseError> {
+pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<User, ApplicationError> {
     use crate::schema::users::dsl::*;
 
     let query = users
@@ -192,18 +192,18 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
         },
         Err(e) => {
             event!(Level::ERROR, "Query failed while getting user by name: {e}");
-            Err(ApplicationDatabaseError::DieselError(e))
+            Err(ApplicationError::DieselError(e))
         }
     }
 }
 
 /// Returns true if a user with the given name exists, false otherwise.
-pub fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, ApplicationDatabaseError> {
+pub fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, ApplicationError> {
     use crate::schema::users::dsl::*;
     let query = users.filter(username.eq(name)).select(User::as_select());
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
     match query.load(connection) {
         Ok(collection) => Ok(!collection.is_empty()),
-        Err(e) => Err(ApplicationDatabaseError::DieselError(e))
+        Err(e) => Err(ApplicationError::DieselError(e))
     }
 }

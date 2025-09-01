@@ -4,7 +4,7 @@ use crate::core::{
     establish_connection,
     get_new_auth_key,
     get_user_by_name,
-    ApplicationDatabaseError,
+    ApplicationError,
 };
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
@@ -31,26 +31,26 @@ pub async fn is_alive() -> impl Responder {
     HttpResponse::Ok()
 }
 
-impl ApplicationDatabaseError {
+impl ApplicationError {
     fn into_http_response(self, request_id: &String) -> HttpResponse {
         match self {
-            ApplicationDatabaseError::DieselError(e) => {
+            ApplicationError::DieselError(e) => {
                 event!(Level::ERROR, "Diesel error: {e}");
                 HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
             },
-            ApplicationDatabaseError::InvalidAuthKey => {
+            ApplicationError::InvalidAuthKey => {
                 event!(Level::ERROR, "Invalid auth key");
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
             }
-            ApplicationDatabaseError::InvalidPassword => {
+            ApplicationError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
             },
-            ApplicationDatabaseError::QueryFailed(e) => {
+            ApplicationError::QueryFailed(e) => {
                 event!(Level::ERROR, "Query failed: {e}");
                 HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
             },
-            ApplicationDatabaseError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
+            ApplicationError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
         }
     }
 }
