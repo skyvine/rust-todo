@@ -11,6 +11,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub enum ApplicationDatabaseError {
     DieselError(diesel::result::Error),
+    InvalidAuthKey,
     InvalidPassword,
     QueryFailed(String),
     UserExists,
@@ -112,7 +113,7 @@ pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConn
     }
 }
 
-pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, diesel::result::Error> {
+pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, ApplicationDatabaseError> {
     use crate::schema::auth_keys::dsl::*;
     use crate::schema::users::dsl::*;
 
@@ -122,11 +123,15 @@ pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Res
 
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-    let results = query.load::<(AuthKey, User)>(connection)?;
-    if results.is_empty() {
-        Err(diesel::result::Error::NotFound)
-    } else {
-        Ok(results[0].1.clone())
+    match query.load::<(AuthKey, User)>(connection) {
+        Ok(results) => {
+            if results.is_empty() {
+                Err(ApplicationDatabaseError::InvalidAuthKey)
+            } else {
+                Ok(results[0].1.clone())
+            }
+        },
+        Err(e) => Err(ApplicationDatabaseError::DieselError(e))
     }
 }
 

@@ -38,11 +38,15 @@ impl ApplicationDatabaseError {
             ApplicationDatabaseError::DieselError(e) => {
                 event!(Level::ERROR, "Diesel error: {e}");
                 HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
+            },
+            ApplicationDatabaseError::InvalidAuthKey => {
+                event!(Level::ERROR, "Invalid auth key");
+                HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
             }
             ApplicationDatabaseError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
-            }
+            },
             ApplicationDatabaseError::QueryFailed(e) => {
                 event!(Level::ERROR, "Query failed: {e}");
                 HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
@@ -123,8 +127,8 @@ pub async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Respon
             match auth_key_to_user(&payload.auth_key, &mut conn) {
                 Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
                 Err(e) => {
-                    event!(Level::ERROR, "Unable to look up user: {e}");
-                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
+                    event!(Level::ERROR, "Unable to look up user");
+                    e.into_http_response(&format!("{request_id}"))
                 }
             },
         Err(e) => {
@@ -203,25 +207,22 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
     };
     let description = TaskDescription::new(std::mem::take(payload.description.as_mut().unwrap_or(&mut String::default())));
 
-    let mut connection = match establish_connection() {
-        Ok(connection) => connection,
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}"))
+            };
+
+            match crate::database::add_task(&owner, &title, &description, &mut connection) {
+                Ok(()) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
         }
-    };
-
-    let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
-        Ok(user) => user,
-        Err(e) => {
-            event!(Level::ERROR, "Unable to retrieve user based on auth key: {e:?}");
-            return HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})));
-        }
-    };
-
-    match crate::database::add_task(&owner, &title, &description, &mut connection) {
-        Ok(()) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
-        Err(e) => e.into_http_response(&format!("{request_id}")),
     }
 }
 
