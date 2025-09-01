@@ -1,9 +1,10 @@
 use crate::database::{
     self,
 
+    add_user,
     auth_key_to_user,
     establish_connection,
-    user_exists,
+    ApplicationDatabaseError,
 };
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
@@ -45,8 +46,6 @@ struct UserRegistrationPayload {
 /// error HTTP response to send back to the client.
 #[post("/register_account")]
 pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistrationPayload>) -> impl Responder {
-    use crate::schema::users::dsl::*;
-
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
 
@@ -76,31 +75,18 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
         Ok(mut conn) => {
             event!(Level::TRACE, "Established connection to database.");
 
-            match user_exists(un.as_ref(), &mut conn) {
-                Ok(false) => {
-                    let query =
-                        diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
-
-                    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-
-                    let result = query.execute(&mut conn);
-                    match result {
-                        Ok(_) => {
-                            event!(Level::TRACE, "Query succeeded");
-                            HttpResponse::Created().finish()
-                        },
-                        Err(e) => {
-                            event!(Level::ERROR, "Query failed: {e}");
-                            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-                        }
+            match add_user(&un, &hashed_password, &mut conn) {
+                Ok(()) => HttpResponse::Created().finish(),
+                Err(e) => match e {
+                    ApplicationDatabaseError::DieselError(e) => {
+                        event!(Level::ERROR, "Unable to add user: {e}");
+                        HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
                     }
-                },
-
-                Ok(true) => HttpResponse::Conflict().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
-
-                Err(e) => {
-                    event!(Level::ERROR, "Unable to query database for existing users: {e}");
-                    HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    ApplicationDatabaseError::QueryFailed(e) => {
+                        event!(Level::ERROR, "Query failed: {e}");
+                        HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    },
+                    ApplicationDatabaseError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 }
             }
         },
