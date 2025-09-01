@@ -1,4 +1,4 @@
-use crate::database::{
+use crate::core::{
     add_user,
     auth_key_to_user,
     establish_connection,
@@ -213,7 +213,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
                 Err(e) => return e.into_http_response(&format!("{request_id}"))
             };
 
-            match crate::database::add_task(&owner, &title, &description, &mut connection) {
+            match crate::core::add_task(&owner, &title, &description, &mut connection) {
                 Ok(()) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }

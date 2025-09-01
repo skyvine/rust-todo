@@ -1,4 +1,4 @@
-mod database;
+mod core;
 mod domain_types;
 mod schema;
 mod web_api;
