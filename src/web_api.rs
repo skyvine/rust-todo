@@ -359,6 +359,22 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn invalid_password_fails() {
+        let username = "invalid-password-username";
+        let password = "invalid-password-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+
+        let response = login(&app, username, "not-the-correct-password").await;
+        if !response.status().is_client_error() {
+            let formatted_response = format!("{response:?}");
+            let body = response.into_body();
+            panic!("Response did not indicate client error: {formatted_response}{body:?}")
+        }
+    }
+
+    #[actix_web::test]
     async fn can_add_task() {
         let username = String::from("can-add-task-username");
         let password = String::from("can-add-task-password");
