@@ -14,6 +14,7 @@ pub enum ApplicationError {
     InvalidAuthKey,
     InvalidPassword,
     QueryFailed(String),
+    Unauthorized,
     UserExists,
 }
 
@@ -30,7 +31,7 @@ pub struct AuthKey {
 
 /// A complete entry from the tasks table in the database
 #[allow(dead_code)]
-#[derive(Queryable, Selectable)]
+#[derive(Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::tasks)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -38,6 +39,16 @@ pub struct Task {
     id:          i32,
     owner:       i32,
     title:       String,
+    description: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(AsChangeset)]
+#[diesel(table_name = crate::schema::tasks)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct TaskUpdate {
+    id:          i32,
+    title:       Option<String>,
     description: Option<String>,
 }
 
@@ -188,10 +199,65 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
 
     match query.load::<User>(connection) {
         Ok(found_users) => {
+            // TODO: Handle empty vector...
+            // TODO: stop cloning
             Ok(found_users[0].clone())
         },
         Err(e) => {
             event!(Level::ERROR, "Query failed while getting user by name: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
+}
+
+pub fn update_task(owner: &User, task_id: &i32, title: &Option<TaskTitle>, description: &Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+    use crate::schema::tasks::dsl;
+
+    // Make sure the given user actually owns the task
+    let fetch_query = dsl::tasks
+        .filter(dsl::id.eq(task_id))
+        .select(Task::as_select());
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&fetch_query));
+
+    let task = match fetch_query.load::<Task>(connection) {
+        Ok(found_tasks) => {
+            if !(found_tasks.is_empty()) {
+                // TODO: stop cloning
+                found_tasks[0].clone()
+            } else {
+                return Err(ApplicationError::DieselError(diesel::result::Error::NotFound));
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query failed while getting task by id: {e}");
+            return Err(ApplicationError::DieselError(e));
+        }
+    };
+
+    if task.owner != owner.id {
+        return Err(ApplicationError::Unauthorized);
+    }
+
+    // TODO: stop cloning...
+    let changeset = TaskUpdate {
+        id: task.id,
+        title: title.as_ref().map(|t| t.as_ref().clone()),
+        description: description.as_ref().map(|d| d.as_ref().clone()),
+    };
+
+    let update_query =
+        diesel::update(dsl::tasks).set(changeset);
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&update_query));
+
+    match update_query.execute(connection) {
+        Ok(_) => {
+            event!(Level::TRACE, "Query succeeded");
+            Ok(())
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
         }
     }

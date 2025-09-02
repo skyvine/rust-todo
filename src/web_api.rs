@@ -50,6 +50,10 @@ impl ApplicationError {
                 event!(Level::ERROR, "Query failed: {e}");
                 HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
             },
+            ApplicationError::Unauthorized => {
+                event!(Level::ERROR, "Unauthorized");
+                HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
+            }
             ApplicationError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
         }
     }
@@ -215,6 +219,52 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
 
             match crate::core::add_task(&owner, &title, &description, &mut connection) {
                 Ok(()) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct UpdateTaskPayload {
+    id: i32,
+    auth_key: String,
+    title: Option<String>,
+    description: Option<String>,
+}
+
+#[post("/update_task")]
+pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Update Task", %request_id).entered();
+
+    let title = if let Some(title) = payload.title.as_mut() {
+        match TaskTitle::new(std::mem::take(title)) {
+            Ok(title) => Some(title),
+            Err(e) => {
+                event!(Level::ERROR, "{e:?}");
+                return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
+            }
+        }
+    } else {
+        None
+    };
+
+    let description = payload.description.as_mut().map(|d| TaskDescription::new(std::mem::take(d)));
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match crate::core::update_task(&owner, &payload.id, &title, &description, &mut connection) {
+                Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         },
