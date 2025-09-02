@@ -1,6 +1,38 @@
+# Rust ToDo
 Rust ToDo is a REST API for task management written in Rust and using PostgresSQL as a backend.
 
-Directory Map:
+## Endpoints
+
+All data is sent and received as JSON. All responses (aside from is_alive) additionally
+include a request_id key which uniquely identifies the request.
+
+### GET
+
+- /is_alive: unconditionally returns an Ok status
+- /whoami: Retrieves the username of the currently logged in user
+  - Input keys:
+    - auth_key: An auth key as returned by the login endpoint.
+  - Output keys:
+    - username: The name of the user associated with the auth_key
+### POST
+
+- /register_account: Creates a new account for future use.
+  - Input keys:
+    - username: The username for the new account. Must not already exist.
+    - password: The password for the new account.
+- /login: Generates a new auth key which can be used in future requests.
+  - Input keys:
+    - username: The username to log in with.
+    - password: The password associated with the user
+  - Output keys:
+    - auth_key: The auth_key which can be used for requests that require authentication
+- /add_task: Creates a new task
+  - Input keys:
+    - auth_key: An auth key as returned by the login endpoint.
+    - title: The title of the new task (should be short)
+    - description (optional): A description of the task (could be long)
+
+## Directory Map
 - .github/workflows/main.yml:
     - CI tests
 - http_requests/*:
