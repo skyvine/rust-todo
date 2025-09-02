@@ -199,9 +199,12 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
 
     match query.load::<User>(connection) {
         Ok(found_users) => {
-            // TODO: Handle empty vector...
             // TODO: stop cloning
-            Ok(found_users[0].clone())
+            if !found_users.is_empty() {
+                Ok(found_users[0].clone())
+            } else {
+                Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+            }
         },
         Err(e) => {
             event!(Level::ERROR, "Query failed while getting user by name: {e}");
