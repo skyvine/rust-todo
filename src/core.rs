@@ -95,7 +95,7 @@ impl User {
     }
 }
 
-pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
     use crate::schema::tasks::dsl;
 
     let query =
@@ -103,10 +103,10 @@ pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, 
 
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-    match query.execute(connection) {
-        Ok(_) => {
+    match query.get_result(connection) {
+        Ok(task) => {
             event!(Level::TRACE, "Query succeeded");
-            Ok(())
+            Ok(task)
         },
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
