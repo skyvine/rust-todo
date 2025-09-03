@@ -279,7 +279,7 @@ pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -
 mod tests {
     use actix_http::Request;
     use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App};
-    use crate::build_app;
+    use crate::{build_app, web_api::UpdateTaskPayload};
     use ctor::ctor;
     use tracing_subscriber::{fmt, EnvFilter};
 
@@ -336,6 +336,24 @@ mod tests {
             password: String::from(password),
         }).to_request();
         test::call_service(&app, request).await
+    }
+
+    fn extract_json_i32(response: ServiceResponse, key: &str) -> i32 {
+        match response.into_body().try_into_bytes() {
+            Ok(bytes) =>
+                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
+                    Ok(dict) => {
+                        match dict[key].as_i64() {
+                            Some(i) => i as i32,
+                            None => panic!("{} is not a number! {:?}", key, dict[key]),
+                        }
+                    },
+                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
+                },
+            Err(e) => {
+                panic!("Unable to extract bytes from response {e:?}")
+            }
+        }
     }
 
     fn extract_json_string(response: ServiceResponse, key: &str) -> String {
@@ -454,5 +472,39 @@ mod tests {
             let body = response.into_body();
             panic!("Response did not indicate client failure: {formatted_response}{body:?}")
         }
+    }
+
+    // TODO: Return the updated task so it can be verified
+    async fn update_task(username: &str, password: &str, title: Option<String>, description: Option<String>) {
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account.");
+
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("original title"), description: Some(String::from("original description"))
+        }).to_request();
+        let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+        let task_id = extract_json_i32(add_task_response, "task_id");
+
+        let update_request = test::TestRequest::post().uri("/update_task").set_json(UpdateTaskPayload {
+            id: task_id,
+            auth_key: auth_key,
+            title: title,
+            description: description,
+        }).to_request();
+        assert_response_success(test::call_service(&app, update_request).await, "Unable to update task.");
+    }
+
+    #[actix_web::test]
+    async fn title_is_updatable() {
+        update_task("title-is-updateable-username", "title-is-updateable-password", Some(String::from("new title")), None).await;
+    }
+
+    #[actix_web::test]
+    async fn description_is_updatable() {
+        update_task("description-is-updateable-username", "description-is-updateable-password", None, Some(String::from("new description"))).await;
     }
 }
