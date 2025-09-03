@@ -31,6 +31,12 @@ include a request_id key which uniquely identifies the request.
     - auth_key: An auth key as returned by the login endpoint.
     - title: The title of the new task (should be short)
     - description (optional): A description of the task (could be long)
+- /update_task: Changes some or all of the data contained in a task.
+  - Input keys:
+    - auth_key: An auth key as returned by the login endpoint.
+    - id: The id of the task to change.
+    - title (optional): The new title of the task.
+    - description (optional): The new description of the task.
 
 ## Directory Map
 - .github/workflows/main.yml:
