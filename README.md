@@ -11,32 +11,32 @@ include a request_id key which uniquely identifies the request.
 - /is_alive: unconditionally returns an Ok status
 - /whoami: Retrieves the username of the currently logged in user
   - Input keys:
-    - auth_key: An auth key as returned by the login endpoint.
+    - auth_key [string]: An auth key as returned by the login endpoint.
   - Output keys:
-    - username: The name of the user associated with the auth_key
+    - username [string]: The name of the user associated with the auth_key
 ### POST
 
 - /register_account: Creates a new account for future use.
   - Input keys:
-    - username: The username for the new account. Must not already exist.
-    - password: The password for the new account.
+    - username [string]: The username for the new account. Must not already exist.
+    - password [string]: The password for the new account.
 - /login: Generates a new auth key which can be used in future requests.
   - Input keys:
-    - username: The username to log in with.
-    - password: The password associated with the user
+    - username [string]: The username to log in with.
+    - password [string]: The password associated with the user
   - Output keys:
-    - auth_key: The auth_key which can be used for requests that require authentication
+    - auth_key [string]: The auth_key which can be used for requests that require authentication
 - /add_task: Creates a new task
   - Input keys:
-    - auth_key: An auth key as returned by the login endpoint.
-    - title: The title of the new task (should be short)
-    - description (optional): A description of the task (could be long)
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - title [string]: The title of the new task (should be short)
+    - description \[string] (optional): A description of the task (could be long)
 - /update_task: Changes some or all of the data contained in a task.
   - Input keys:
-    - auth_key: An auth key as returned by the login endpoint.
-    - id: The id of the task to change.
-    - title (optional): The new title of the task.
-    - description (optional): The new description of the task.
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the task to change.
+    - title \[string] (optional): The new title of the task.
+    - description \[string] (optional): The new description of the task.
 
 ## Directory Map
 - .github/workflows/main.yml:
