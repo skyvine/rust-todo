@@ -43,6 +43,25 @@ pub struct Task {
 }
 
 #[allow(dead_code)]
+impl Task {
+    pub fn id(&self) -> &i32 {
+        &self.id
+    }
+
+    pub fn owner_id(&self) -> &i32 {
+        &self.owner
+    }
+
+    pub fn title(&self) -> &String {
+        &self.title
+    }
+
+    pub fn description(&self) -> &Option<String> {
+        &self.description
+    }
+}
+
+#[allow(dead_code)]
 #[derive(AsChangeset)]
 #[diesel(table_name = crate::schema::tasks)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
