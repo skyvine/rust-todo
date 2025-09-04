@@ -42,6 +42,10 @@ impl ApplicationError {
                 event!(Level::ERROR, "Invalid auth key");
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
             }
+            ApplicationError::InvalidData(message) => {
+                event!(Level::ERROR, "Invalid data: {message}");
+                HttpResponse::BadRequest().body(format!("{}", json!({"request_id": request_id, "message": message})))
+            }
             ApplicationError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))

@@ -12,6 +12,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub enum ApplicationError {
     DieselError(diesel::result::Error),
     InvalidAuthKey,
+    InvalidData(String),
     InvalidPassword,
     QueryFailed(String),
     Unauthorized,
