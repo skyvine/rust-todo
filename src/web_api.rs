@@ -342,15 +342,14 @@ mod tests {
         test::call_service(&app, request).await
     }
 
-    fn extract_json_i32(response: ServiceResponse, key: &str) -> i32 {
+    fn extract_json_from_constructor<Constructor, Output>(response: ServiceResponse, key: &str, constructor: Constructor) -> Output
+        where Constructor: FnOnce(&serde_json::Value) -> Output
+    {
         match response.into_body().try_into_bytes() {
             Ok(bytes) =>
                 match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
                     Ok(dict) => {
-                        match dict[key].as_i64() {
-                            Some(i) => i as i32,
-                            None => panic!("{} is not a number! {:?}", key, dict[key]),
-                        }
+                        constructor(&dict[key])
                     },
                     Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
                 },
@@ -360,22 +359,20 @@ mod tests {
         }
     }
 
+    fn extract_json_i32(response: ServiceResponse, key: &str) -> i32 {
+        extract_json_from_constructor(response, key, |v|
+            match v.as_i64() {
+                Some(i) => i as i32,
+                None => panic!("{} is not a number! {:?}", key, v),
+            })
+    }
+
     fn extract_json_string(response: ServiceResponse, key: &str) -> String {
-        match response.into_body().try_into_bytes() {
-            Ok(bytes) =>
-                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
-                    Ok(dict) => {
-                        match dict[key].as_str() {
-                            Some(s) => String::from(s),
-                            None => panic!("{} is not a string! {:?}", key, dict[key]),
-                        }
-                    },
-                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
-                },
-            Err(e) => {
-                panic!("Unable to extract bytes from response {e:?}")
-            }
-        }
+        extract_json_from_constructor(response, key, |v|
+            match v.as_str() {
+                Some(s) => String::from(s),
+                None => panic!("{} is not a string! {:?}", key, v),
+            })
     }
 
     #[actix_web::test]
