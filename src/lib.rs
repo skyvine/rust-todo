@@ -10,6 +10,7 @@ macro_rules! build_app {
     () => {
             App::new()
                 .service(crate::web_api::add_task)
+                .service(crate::web_api::get_task_by_id)
                 .service(crate::web_api::is_alive)
                 .service(crate::web_api::login)
                 .service(crate::web_api::register_account)

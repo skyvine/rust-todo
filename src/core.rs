@@ -10,6 +10,7 @@ use tracing::{event, Level};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+#[derive(Debug)]
 pub enum ApplicationError {
     DieselError(diesel::result::Error),
     InvalidAuthKey,
@@ -33,7 +34,7 @@ pub struct AuthKey {
 
 /// A complete entry from the tasks table in the database
 #[allow(dead_code)]
-#[derive(Clone, Deserialize, Queryable, Selectable, Serialize)]
+#[derive(Clone, Debug, Deserialize, Queryable, Selectable, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -239,6 +240,29 @@ pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_
         }
     }
 
+}
+
+pub fn get_task_by_id(task_id: &i32, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
+    use crate::schema::tasks::dsl::*;
+
+    let query = tasks.filter(id.eq(task_id)).select(Task::as_select());
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.load::<Task>(connection) {
+        Ok(found_tasks) => {
+            // TODO: stop cloning
+            if !(found_tasks.is_empty()) {
+                Ok(found_tasks[0].clone())
+            } else {
+                Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+            }
+        }
+        Err(e) => {
+            event!(Level::ERROR, "Query failed while getting task by id: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
 }
 
 pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<User, ApplicationError> {

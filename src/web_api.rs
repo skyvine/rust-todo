@@ -233,6 +233,33 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
     }
 }
 
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct GetTaskByIdPayload {
+    auth_key: String,
+    id: i32,
+}
+
+// TODO: Only let users get tasks they own
+#[get("/task_by_id")]
+pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get Task by ID", %request_id).entered();
+
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            match crate::core::get_task_by_id(&payload.id, &mut connection) {
+                Ok(task) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct UpdateTaskPayload {
     id: i32,
@@ -283,7 +310,7 @@ pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -
 mod tests {
     use actix_http::Request;
     use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App};
-    use crate::{build_app, web_api::UpdateTaskPayload};
+    use crate::{build_app, core::Task};
     use ctor::ctor;
     use tracing_subscriber::{fmt, EnvFilter};
 
@@ -475,6 +502,32 @@ mod tests {
         }
     }
 
+    #[actix_web::test]
+    async fn can_get_task() {
+        let username = String::from("can-get-task-username");
+        let password = String::from("can-get-task-password");
+        let app =
+            test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
+
+        let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("test title"), description: Some(String::from("test description"))
+        }).to_request();
+        let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+
+        let task_id = extract_json_i32(add_task_response, "task_id");
+        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: auth_key, id: task_id
+        }).to_request();
+        let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task.");
+        let task = extract_json_from_constructor(get_task_response, "task", Task::from_json_object);
+        assert_eq!(*task.unwrap().id(), task_id);
+    }
+
     // TODO: Return the updated task so it can be verified
     async fn update_task(username: &str, password: &str, title: Option<String>, description: Option<String>) {
         let app = test::init_service(build_app!()).await;
@@ -490,7 +543,7 @@ mod tests {
         let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
         let task_id = extract_json_i32(add_task_response, "task_id");
 
-        let update_request = test::TestRequest::post().uri("/update_task").set_json(UpdateTaskPayload {
+        let update_request = test::TestRequest::post().uri("/update_task").set_json(super::UpdateTaskPayload {
             id: task_id,
             auth_key: auth_key,
             title: title,
