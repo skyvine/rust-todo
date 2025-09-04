@@ -4,6 +4,7 @@ use argon2::{
     Argon2
 };
 use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::env;
 use tracing::{event, Level};
 use uuid::Uuid;
@@ -32,7 +33,7 @@ pub struct AuthKey {
 
 /// A complete entry from the tasks table in the database
 #[allow(dead_code)]
-#[derive(Clone, Queryable, Selectable)]
+#[derive(Clone, Deserialize, Queryable, Selectable, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -45,6 +46,37 @@ pub struct Task {
 
 #[allow(dead_code)]
 impl Task {
+    // Constructors
+    pub fn from_json_object(object: &serde_json::Value) -> Result<Self, ApplicationError> {
+        let id = match object["id"].as_i64() {
+            Some(number) => number,
+            None => return Err(ApplicationError::InvalidData(format!("{} should be a number", object["id"]))),
+        } as i32;
+
+        let owner = match object["owner"].as_i64() {
+            Some(number) => number,
+            None => return Err(ApplicationError::InvalidData(format!("{} should be a number", object["owner"]))),
+        } as i32;
+
+        let title = String::from(match object["title"].as_str() {
+            Some(s) => s,
+            None => return Err(ApplicationError::InvalidData(format!("{} should be a string", object["title"])))
+        });
+
+        let description = String::from(match object["description"].as_str() {
+            Some(s) => s,
+            None => return Err(ApplicationError::InvalidData(format!("{} should be a string", object["description"])))
+        });
+
+        Ok(Task {
+            id,
+            owner,
+            title,
+            description: Some(description),
+        })
+    }
+
+    // Accessors
     pub fn id(&self) -> &i32 {
         &self.id
     }
