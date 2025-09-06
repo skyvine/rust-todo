@@ -37,6 +37,7 @@ include a request_id key which uniquely identifies the request.
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to change.
+    - completed \[bool] (optional): The new completed status of the task.
     - title \[string] (optional): The new title of the task.
     - description \[string] (optional): The new description of the task.
 

@@ -43,6 +43,7 @@ pub struct Task {
     owner:       i32,
     title:       String,
     description: Option<String>,
+    completed:   bool,
 }
 
 #[allow(dead_code)]
@@ -59,6 +60,11 @@ impl Task {
             None => return Err(ApplicationError::InvalidData(format!("{} should be a number", object["owner"]))),
         } as i32;
 
+        let completed = match object["completed"].as_bool() {
+            Some(b) => b,
+            None => return Err(ApplicationError::InvalidData(format!("{} should be a bool", object["completed"]))),
+        };
+
         let title = String::from(match object["title"].as_str() {
             Some(s) => s,
             None => return Err(ApplicationError::InvalidData(format!("{} should be a string", object["title"])))
@@ -72,6 +78,7 @@ impl Task {
         Ok(Task {
             id,
             owner,
+            completed,
             title,
             description: Some(description),
         })
@@ -84,6 +91,10 @@ impl Task {
 
     pub fn owner_id(&self) -> &i32 {
         &self.owner
+    }
+
+    pub fn completed(&self) -> &bool {
+        &self.completed
     }
 
     pub fn title(&self) -> &String {
@@ -101,6 +112,7 @@ impl Task {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct TaskUpdate {
     id:          i32,
+    completed:   Option<bool>,
     title:       Option<String>,
     description: Option<String>,
 }
@@ -129,11 +141,15 @@ impl User {
     }
 }
 
-pub fn add_task(owner: &User, title: &TaskTitle, description: &TaskDescription, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
+pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: &TaskDescription, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
     use crate::schema::tasks::dsl;
 
     let query =
-        diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()), dsl::title.eq(title.as_ref()), dsl::description.eq(description.as_ref())));
+        diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()),
+                                                                dsl::title.eq(title.as_ref()),
+                                                                dsl::description.eq(description.as_ref()),
+                                                                dsl::completed.eq(completed),
+                                                            ));
 
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
@@ -287,7 +303,7 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
     }
 }
 
-pub fn update_task(owner: &User, task_id: &i32, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn update_task(owner: &User, task_id: &i32, completed: Option<bool>, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 
     // Make sure the given user actually owns the task
@@ -317,6 +333,7 @@ pub fn update_task(owner: &User, task_id: &i32, title: Option<TaskTitle>, descri
 
     let changeset = TaskUpdate {
         id: task.id,
+        completed,
         title: title.map(|t| t.into()),
         description: description.map(|d| d.into()),
     };

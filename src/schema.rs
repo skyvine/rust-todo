@@ -15,6 +15,7 @@ diesel::table! {
         owner -> Int4,
         title -> Text,
         description -> Nullable<Text>,
+        completed -> Bool,
     }
 }
 

@@ -221,7 +221,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
                 Err(e) => return e.into_http_response(&format!("{request_id}"))
             };
 
-            match crate::core::add_task(&owner, &title, &description, &mut connection) {
+            match crate::core::add_task(&owner, &title, false, &description, &mut connection) {
                 Ok(task) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}"), "task_id": task.id()}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
@@ -275,6 +275,7 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
 struct UpdateTaskPayload {
     id: i32,
     auth_key: String,
+    completed: Option<bool>,
     title: Option<String>,
     description: Option<String>,
 }
@@ -305,7 +306,7 @@ pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::update_task(&owner, &payload.id, title, description, &mut connection) {
+            match crate::core::update_task(&owner, &payload.id, payload.completed, title, description, &mut connection) {
                 Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
@@ -570,7 +571,7 @@ mod tests {
     }
 
     // TODO: Return the updated task so it can be verified
-    async fn update_task(username: &str, password: &str, title: Option<String>, description: Option<String>) -> Task {
+    async fn update_task(username: &str, password: &str, completed: Option<bool>, title: Option<String>, description: Option<String>) -> Task {
         let app = test::init_service(build_app!()).await;
 
         assert_response_success(register(&app, username, password).await, "Unable to register account.");
@@ -587,6 +588,7 @@ mod tests {
         let update_request = test::TestRequest::post().uri("/update_task").set_json(super::UpdateTaskPayload {
             id: task_id,
             auth_key: auth_key.clone(),
+            completed: completed,
             title: title,
             description: description,
         }).to_request();
@@ -603,14 +605,21 @@ mod tests {
     #[actix_web::test]
     async fn title_is_updatable() {
         let updated_title = String::from("new title");
-        let updated_task = update_task("title-is-updateable-username", "title-is-updateable-password", Some(updated_title.clone()), None).await;
+        let updated_task = update_task("title-is-updateable-username", "title-is-updateable-password", None, Some(updated_title.clone()), None).await;
         assert_eq!(*updated_task.title(), updated_title)
     }
 
     #[actix_web::test]
     async fn description_is_updatable() {
         let updated_description = String::from("new description");
-        let updated_task = update_task("description-is-updateable-username", "description-is-updateable-password", None, Some(updated_description.clone())).await;
+        let updated_task = update_task("description-is-updateable-username", "description-is-updateable-password", None, None, Some(updated_description.clone())).await;
         assert_eq!(*updated_task.description().as_ref().unwrap(), updated_description)
+    }
+
+    #[actix_web::test]
+    async fn completed_is_updatable() {
+        let updated_completed = true;
+        let updated_task = update_task("completed-is-updateable-username", "completed-is-updateable-password", Some(updated_completed), None, None).await;
+        assert!(updated_task.completed())
     }
 }
