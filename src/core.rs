@@ -251,9 +251,8 @@ pub fn get_task_by_id(task_id: &i32, connection: &mut PgConnection) -> Result<Ta
 
     match query.load::<Task>(connection) {
         Ok(found_tasks) => {
-            // TODO: stop cloning
             if !(found_tasks.is_empty()) {
-                Ok(found_tasks[0].clone())
+                Ok(found_tasks.into_iter().next().unwrap())
             } else {
                 Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
             }
@@ -275,9 +274,8 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
 
     match query.load::<User>(connection) {
         Ok(found_users) => {
-            // TODO: stop cloning
             if !found_users.is_empty() {
-                Ok(found_users[0].clone())
+                Ok(found_users.into_iter().next().unwrap())
             } else {
                 Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
             }
@@ -302,8 +300,7 @@ pub fn update_task(owner: &User, task_id: &i32, title: &Option<TaskTitle>, descr
     let task = match fetch_query.load::<Task>(connection) {
         Ok(found_tasks) => {
             if !(found_tasks.is_empty()) {
-                // TODO: stop cloning
-                found_tasks[0].clone()
+                found_tasks.into_iter().next().unwrap()
             } else {
                 return Err(ApplicationError::DieselError(diesel::result::Error::NotFound));
             }
