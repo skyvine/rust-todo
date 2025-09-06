@@ -35,6 +35,12 @@ impl AsRef<String> for TaskDescription {
     }
 }
 
+impl From<TaskDescription> for String {
+    fn from(value: TaskDescription) -> Self {
+        value.0
+    }
+}
+
 pub(crate) struct TaskTitle(String);
 
 impl TaskTitle {
@@ -53,6 +59,11 @@ impl AsRef<String> for TaskTitle {
     }
 }
 
+impl From<TaskTitle> for String {
+    fn from(value: TaskTitle) -> Self {
+        value.0
+    }
+}
 pub(crate) struct Username(String);
 
 impl Username {

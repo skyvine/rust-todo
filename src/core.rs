@@ -287,7 +287,7 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
     }
 }
 
-pub fn update_task(owner: &User, task_id: &i32, title: &Option<TaskTitle>, description: &Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn update_task(owner: &User, task_id: &i32, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 
     // Make sure the given user actually owns the task
@@ -315,11 +315,10 @@ pub fn update_task(owner: &User, task_id: &i32, title: &Option<TaskTitle>, descr
         return Err(ApplicationError::Unauthorized);
     }
 
-    // TODO: stop cloning...
     let changeset = TaskUpdate {
         id: task.id,
-        title: title.as_ref().map(|t| t.as_ref().clone()),
-        description: description.as_ref().map(|d| d.as_ref().clone()),
+        title: title.map(|t| t.into()),
+        description: description.map(|d| d.into()),
     };
 
     let update_query =

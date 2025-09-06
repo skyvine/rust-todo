@@ -294,7 +294,7 @@ pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::update_task(&owner, &payload.id, &title, &description, &mut connection) {
+            match crate::core::update_task(&owner, &payload.id, title, description, &mut connection) {
                 Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
