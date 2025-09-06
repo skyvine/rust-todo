@@ -239,7 +239,6 @@ struct GetTaskByIdPayload {
     id: i32,
 }
 
-// TODO: Only let users get tasks they own
 #[get("/task_by_id")]
 pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -571,7 +570,7 @@ mod tests {
     }
 
     // TODO: Return the updated task so it can be verified
-    async fn update_task(username: &str, password: &str, title: Option<String>, description: Option<String>) {
+    async fn update_task(username: &str, password: &str, title: Option<String>, description: Option<String>) -> Task {
         let app = test::init_service(build_app!()).await;
 
         assert_response_success(register(&app, username, password).await, "Unable to register account.");
@@ -587,20 +586,31 @@ mod tests {
 
         let update_request = test::TestRequest::post().uri("/update_task").set_json(super::UpdateTaskPayload {
             id: task_id,
-            auth_key: auth_key,
+            auth_key: auth_key.clone(),
             title: title,
             description: description,
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "Unable to update task.");
+
+        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: auth_key,
+            id: task_id,
+        }).to_request();
+        let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task after creating.");
+        extract_json_from_constructor(get_task_response, "task", Task::from_json_object).unwrap()
     }
 
     #[actix_web::test]
     async fn title_is_updatable() {
-        update_task("title-is-updateable-username", "title-is-updateable-password", Some(String::from("new title")), None).await;
+        let updated_title = String::from("new title");
+        let updated_task = update_task("title-is-updateable-username", "title-is-updateable-password", Some(updated_title.clone()), None).await;
+        assert_eq!(*updated_task.title(), updated_title)
     }
 
     #[actix_web::test]
     async fn description_is_updatable() {
-        update_task("description-is-updateable-username", "description-is-updateable-password", None, Some(String::from("new description"))).await;
+        let updated_description = String::from("new description");
+        let updated_task = update_task("description-is-updateable-username", "description-is-updateable-password", None, Some(updated_description.clone())).await;
+        assert_eq!(*updated_task.description().as_ref().unwrap(), updated_description)
     }
 }
