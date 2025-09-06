@@ -249,7 +249,19 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
     match establish_connection() {
         Ok(mut connection) => {
             match crate::core::get_task_by_id(&payload.id, &mut connection) {
-                Ok(task) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task}))),
+                Ok(task) => {
+                    let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                        Ok(user) => user,
+                        Err(e) => return e.into_http_response(&format!("{request_id}")),
+                    };
+
+                    if user.ref_id() == task.owner_id() {
+                        HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task})))
+                    } else {
+                        event!(Level::ERROR, "Cannot get task {}, belongs to user {} but requested by user {}", task.id(), task.owner_id(), user.ref_id());
+                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    }
+                }
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -526,6 +538,36 @@ mod tests {
         let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task.");
         let task = extract_json_from_constructor(get_task_response, "task", Task::from_json_object);
         assert_eq!(*task.unwrap().id(), task_id);
+    }
+
+    #[actix_web::test]
+    async fn cannot_get_different_users_task() {
+        let owner_username = "cannot-get-different-users-task-owner-username";
+        let owner_password = "cannot-get-different-users-task-owner-password";
+        let non_owner_username = "cannot-get-different-users-task-non-owner-username";
+        let non_owner_password = "cannot-get-different-users-task-non-owner-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, owner_password).await, "Unable to register owner account");
+        assert_response_success(register(&app, non_owner_username, non_owner_password).await, "Unable to register non-owner account");
+
+        let owner_login_response = assert_response_success(login(&app, owner_username, owner_password).await, "Could not login as owner.");
+        let owner_auth_key = extract_json_string(owner_login_response, "auth_key");
+
+        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_auth_key.clone(), title: String::from("test title"), description: Some(String::from("test description"))
+        }).to_request();
+        let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+        let task_id = extract_json_i32(add_task_response, "task_id");
+
+        let non_owner_login_response = assert_response_success(login(&app, non_owner_username, non_owner_password).await, "Could not login as non-owner.");
+        let non_owner_auth_key = extract_json_string(non_owner_login_response, "auth_key");
+
+        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: non_owner_auth_key, id: task_id
+        }).to_request();
+        let get_task_response = test::call_service(&app, get_task_request).await;
+        assert!(get_task_response.status().is_client_error(), "Getting task did not indicate client error.");
     }
 
     // TODO: Return the updated task so it can be verified
