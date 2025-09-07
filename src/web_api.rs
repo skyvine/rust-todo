@@ -21,16 +21,6 @@ use tracing::{event, span, Level};
 use uuid::Uuid;
 use zeroize::{ZeroizeOnDrop};
 
-/// An endpoint to checks that the server is up.
-/// 
-/// This endpoint always responds with status OK simply to verify that
-/// the server is running and responding to requests.
-#[get("/is_alive")]
-pub async fn is_alive() -> impl Responder {
-    event!(Level::TRACE, "Responding to is_alive check");
-    HttpResponse::Ok()
-}
-
 impl ApplicationError {
     fn into_http_response(self, request_id: &String) -> HttpResponse {
         match self {
@@ -59,6 +49,171 @@ impl ApplicationError {
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
             }
             ApplicationError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
+        }
+    }
+}
+
+// GET endpoints
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct GetTaskByIdPayload {
+    auth_key: String,
+    id: i32,
+}
+
+#[get("/task_by_id")]
+pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get Task by ID", %request_id).entered();
+
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            match crate::core::get_task_by_id(&payload.id, &mut connection) {
+                Ok(task) => {
+                    let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                        Ok(user) => user,
+                        Err(e) => return e.into_http_response(&format!("{request_id}")),
+                    };
+
+                    if user.ref_id() == task.owner_id() {
+                        HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task})))
+                    } else {
+                        event!(Level::ERROR, "Cannot get task {}, belongs to user {} but requested by user {}", task.id(), task.owner_id(), user.ref_id());
+                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    }
+                }
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+/// An endpoint to checks that the server is up.
+/// 
+/// This endpoint always responds with status OK simply to verify that
+/// the server is running and responding to requests.
+#[get("/is_alive")]
+pub async fn is_alive() -> impl Responder {
+    event!(Level::TRACE, "Responding to is_alive check");
+    HttpResponse::Ok()
+}
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct WhoAmIPayload {
+    auth_key: String
+}
+
+#[get("/whoami")]
+pub async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut conn) => 
+            match auth_key_to_user(&payload.auth_key, &mut conn) {
+                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
+                Err(e) => {
+                    event!(Level::ERROR, "Unable to look up user");
+                    e.into_http_response(&format!("{request_id}"))
+                }
+            },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
+        }
+    }
+}
+
+// POST endpoints
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct AddTaskPayload {
+    auth_key:    String,
+    title:       String,
+    description: Option<String>,
+}
+
+#[post("/add_task")]
+pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
+
+    let title = match TaskTitle::new(std::mem::take(&mut payload.title)) {
+        Ok(title) => title,
+        Err(e) => {
+            event!(Level::ERROR, "{e:?}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
+        }
+    };
+    let description = TaskDescription::new(std::mem::take(payload.description.as_mut().unwrap_or(&mut String::default())));
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}"))
+            };
+
+            match crate::core::add_task(&owner, &title, false, &description, &mut connection) {
+                Ok(task) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}"), "task_id": task.id()}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct LoginPayload {
+    username: String,
+    password: String
+}
+
+#[post("/login")]
+pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
+
+    let un = match Username::new(std::mem::take(&mut payload.username)) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+        }
+    };
+
+    let pw = CleartextPassword::new(std::mem::take(&mut payload.password));
+
+    match establish_connection() {
+        Ok(mut conn) => {
+            let user = match get_user_by_name(&un, &mut conn) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            let hashed_password = match PasswordHash::new(user.ref_password()) {
+                Ok(ph) => ph,
+                Err(e) => {
+                    event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
+                    return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+                }
+            };
+
+            match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
+                Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{auth_key}")}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
         }
     }
 }
@@ -114,158 +269,6 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
 
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}.");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct WhoAmIPayload {
-    auth_key: String
-}
-
-#[get("/whoami")]
-pub async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
-
-    match establish_connection() {
-        Ok(mut conn) => 
-            match auth_key_to_user(&payload.auth_key, &mut conn) {
-                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
-                Err(e) => {
-                    event!(Level::ERROR, "Unable to look up user");
-                    e.into_http_response(&format!("{request_id}"))
-                }
-            },
-        Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct LoginPayload {
-    username: String,
-    password: String
-}
-
-#[post("/login")]
-pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
-
-    let un = match Username::new(std::mem::take(&mut payload.username)) {
-        Ok(un) => un,
-        Err(message) => {
-            event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
-        }
-    };
-
-    let pw = CleartextPassword::new(std::mem::take(&mut payload.password));
-
-    match establish_connection() {
-        Ok(mut conn) => {
-            let user = match get_user_by_name(&un, &mut conn) {
-                Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}")),
-            };
-
-            let hashed_password = match PasswordHash::new(user.ref_password()) {
-                Ok(ph) => ph,
-                Err(e) => {
-                    event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
-                    return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
-                }
-            };
-
-            match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
-                Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{auth_key}")}))),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
-        },
-        Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct AddTaskPayload {
-    auth_key:    String,
-    title:       String,
-    description: Option<String>,
-}
-
-#[post("/add_task")]
-pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
-
-    let title = match TaskTitle::new(std::mem::take(&mut payload.title)) {
-        Ok(title) => title,
-        Err(e) => {
-            event!(Level::ERROR, "{e:?}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
-        }
-    };
-    let description = TaskDescription::new(std::mem::take(payload.description.as_mut().unwrap_or(&mut String::default())));
-
-    match establish_connection() {
-        Ok(mut connection) => {
-            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
-                Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}"))
-            };
-
-            match crate::core::add_task(&owner, &title, false, &description, &mut connection) {
-                Ok(task) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}"), "task_id": task.id()}))),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
-        },
-        Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct GetTaskByIdPayload {
-    auth_key: String,
-    id: i32,
-}
-
-#[get("/task_by_id")]
-pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Get Task by ID", %request_id).entered();
-
-
-    match establish_connection() {
-        Ok(mut connection) => {
-            match crate::core::get_task_by_id(&payload.id, &mut connection) {
-                Ok(task) => {
-                    let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
-                        Ok(user) => user,
-                        Err(e) => return e.into_http_response(&format!("{request_id}")),
-                    };
-
-                    if user.ref_id() == task.owner_id() {
-                        HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task})))
-                    } else {
-                        event!(Level::ERROR, "Cannot get task {}, belongs to user {} but requested by user {}", task.id(), task.owner_id(), user.ref_id());
-                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
-                    }
-                }
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
-        }
-        Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
             HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
         }
     }
