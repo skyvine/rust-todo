@@ -70,17 +70,23 @@ impl Task {
             None => return Err(ApplicationError::InvalidData(format!("{} should be a string", object["title"])))
         });
 
-        let description = String::from(match object["description"].as_str() {
-            Some(s) => s,
-            None => return Err(ApplicationError::InvalidData(format!("{} should be a string", object["description"])))
-        });
+        let description = match object["description"].as_str() {
+            Some(s) => Some(String::from(s)),
+            None => {
+                if object["description"].is_null() {
+                    None
+                } else {
+                    return Err(ApplicationError::InvalidData(format!("{} should be a string", object["description"])))
+                }
+            }
+        };
 
         Ok(Task {
             id,
             owner,
             completed,
             title,
-            description: Some(description),
+            description,
         })
     }
 
