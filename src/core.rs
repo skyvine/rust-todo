@@ -303,6 +303,20 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
     }
 }
 
+pub fn logout(auth_key: &String, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+    use crate::schema::auth_keys::dsl::*;
+
+    let query = diesel::delete(auth_keys.filter(key.eq(auth_key)));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.execute(connection) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(ApplicationError::DieselError(e)),
+    }
+
+}
+
 pub fn update_task(owner: &User, task_id: &i32, completed: Option<bool>, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 

@@ -8,7 +8,7 @@ use crate::core::{
 };
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
-use actix_web::{get, post, HttpResponse, Responder};
+use actix_web::{delete, get, post, HttpResponse, Responder};
 use argon2::{
     password_hash::{
         rand_core::OsRng, PasswordHash, PasswordHasher, SaltString
@@ -49,6 +49,32 @@ impl ApplicationError {
                 HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
             }
             ApplicationError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
+        }
+    }
+}
+
+// DELETE endpoints
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct LogoutPayload {
+    auth_key: String,
+}
+
+#[delete("/logout")]
+pub async fn logout(payload: actix_web::web::Json<LogoutPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Logout", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            match crate::core::logout(&payload.auth_key, &mut connection) {
+                Ok(()) => HttpResponse::Ok().finish(),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
         }
     }
 }
@@ -495,6 +521,25 @@ mod tests {
             let body = response.into_body();
             panic!("Response did not indicate client error: {formatted_response}{body:?}")
         }
+    }
+
+    #[actix_web::test]
+    async fn can_logout() {
+        let username = "can-logout-username";
+        let password = "can-logout-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+        
+        let logout_request = test::TestRequest::delete().uri("/logout").set_json(super::LogoutPayload { auth_key: auth_key.clone() }).to_request();
+        assert_response_success(test::call_service(&app, logout_request).await, "Unable to log out.");
+
+        let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload { auth_key }).to_request();
+        let whoami_response = test::call_service(&app, whoami_request).await;
+        assert_eq!(whoami_response.status().as_u16(), 401, "WhoAmI did not return client error.");
     }
 
     #[actix_web::test]

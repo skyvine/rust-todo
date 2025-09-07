@@ -13,6 +13,7 @@ macro_rules! build_app {
                 .service(crate::web_api::get_task_by_id)
                 .service(crate::web_api::is_alive)
                 .service(crate::web_api::login)
+                .service(crate::web_api::logout)
                 .service(crate::web_api::register_account)
                 .service(crate::web_api::update_task)
                 .service(crate::web_api::whoami)
