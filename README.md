@@ -39,7 +39,7 @@ include a request_id key which uniquely identifies the request.
     - description \[string] (optional): A description of the task (could be long)
   - Output keys:
     - id [number]: A unique identifier for the task.
-- /update_task: Changes some or all of the data contained in a task.
+- /task_by_id: Changes some or all of the data contained in a task.
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to change.

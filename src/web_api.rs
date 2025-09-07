@@ -321,8 +321,8 @@ struct UpdateTaskPayload {
 /// 
 /// It is an error for all of the optional values to be None; at least on field must be updated for
 /// this endpoint to succeed.
-#[post("/update_task")]
-pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -> impl Responder {
+#[post("/task_by_id")]
+pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Update Task", %request_id).entered();
 
@@ -645,7 +645,7 @@ mod tests {
         let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
         let task_id = extract_json_i32(add_task_response, "task_id");
 
-        let update_request = test::TestRequest::post().uri("/update_task").set_json(super::UpdateTaskPayload {
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
             id: task_id,
             auth_key: auth_key.clone(),
             completed: completed,
