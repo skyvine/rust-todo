@@ -6,6 +6,12 @@ Rust ToDo is a REST API for task management written in Rust and using PostgresSQ
 All data is sent and received as JSON. All responses (aside from is_alive) additionally
 include a request_id key which uniquely identifies the request.
 
+### DELETE
+
+- /logout: Disable an auth key
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+
 ### GET
 
 - /is_alive: unconditionally returns an Ok status
