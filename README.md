@@ -15,6 +15,12 @@ include a request_id key which uniquely identifies the request.
 ### GET
 
 - /is_alive: unconditionally returns an Ok status
+- /task_by_id: Retrieve the contents of a task based on its ID
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the task to retrieve.
+  - Output keys:
+    - task [object]: An object that can be deserialized by `Task::from_json_object`.
 - /whoami: Retrieves the username of the currently logged in user
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
