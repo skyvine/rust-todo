@@ -61,6 +61,9 @@ struct GetTaskByIdPayload {
     id: i32,
 }
 
+/// Returns a specific task based on the ID of the given task.
+/// 
+/// The user must be logged in as the task's owner in order to get the task.
 #[get("/task_by_id")]
 pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -108,6 +111,7 @@ struct WhoAmIPayload {
     auth_key: String
 }
 
+/// Returns the username of the currently logged in user.
 #[get("/whoami")]
 pub async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -138,6 +142,9 @@ struct AddTaskPayload {
     description: Option<String>,
 }
 
+/// Creates a new task.
+/// 
+/// "Completed" defaults to "false"
 #[post("/add_task")]
 pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -176,6 +183,7 @@ struct LoginPayload {
     password: String
 }
 
+/// Gives a new auth key to the user.
 #[post("/login")]
 pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -283,6 +291,10 @@ struct UpdateTaskPayload {
     description: Option<String>,
 }
 
+/// Changes one or more of the task's fields.
+/// 
+/// It is an error for all of the optional values to be None; at least on field must be updated for
+/// this endpoint to succeed.
 #[post("/update_task")]
 pub async fn update_task(mut payload: actix_web::web::Json<UpdateTaskPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
