@@ -88,7 +88,26 @@ struct GetAllTasksPayload {
 
 #[get("/all_tasks")]
 pub async fn get_all_tasks(payload: actix_web::web::Json<GetAllTasksPayload>) -> impl Responder {
-    HttpResponse::NotImplemented().finish()
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get All Tasks", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match crate::core::get_all_tasks_for_user(&user, &mut connection) {
+                Ok(tasks) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "tasks": tasks}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
