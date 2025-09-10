@@ -82,6 +82,16 @@ pub async fn logout(payload: actix_web::web::Json<LogoutPayload>) -> impl Respon
 // GET endpoints
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct GetAllTasksPayload {
+    auth_key: String
+}
+
+#[get("/all_tasks")]
+pub async fn get_all_tasks(payload: actix_web::web::Json<GetAllTasksPayload>) -> impl Responder {
+    HttpResponse::NotImplemented().finish()
+}
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct GetTaskByIdPayload {
     auth_key: String,
     id: i32,
@@ -681,5 +691,41 @@ mod tests {
         let updated_completed = true;
         let updated_task = update_task("completed-is-updateable-username", "completed-is-updateable-password", Some(updated_completed), None, None).await;
         assert!(updated_task.completed())
+    }
+
+    #[actix_web::test]
+    async fn can_get_all_tasks() {
+        let username = "can-get-all-tasks-username";
+        let password = "can-get-all-tasks-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account.");
+
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let first_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("task 1"), description: None
+        }).to_request();
+        assert_response_success(test::call_service(&app, first_add_task_request).await, "Unable to add first task.");
+
+        let second_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("task 2"), description: None
+        }).to_request();
+        assert_response_success(test::call_service(&app, second_add_task_request).await, "Unable to add second task.");
+
+        let get_tasks_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
+            auth_key: auth_key.clone()
+        }).to_request();
+        let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get tasks!");
+        let tasks: Vec<Task> = extract_json_from_constructor(get_tasks_response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.into_iter().map(|obj| match Task::from_json_object(obj) {
+                    Ok(task) => task,
+                    Err(e) => panic!("Could not parse task: {e:?}"),
+                }).collect(),
+                None => panic!("{} is not an array!", v),
+            });
+        assert_eq!(tasks.len(), 2, "Expected 2 tasks, found {}", tasks.len());
     }
 }
