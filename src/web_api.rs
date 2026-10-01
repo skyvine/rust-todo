@@ -157,13 +157,14 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
 
     match establish_connection() {
         Ok(mut connection) => {
+            // Authenticate before fetching anything
+            let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
             match crate::core::get_task_by_id(&payload.id, &mut connection) {
                 Ok(task) => {
-                    let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
-                        Ok(user) => user,
-                        Err(e) => return e.into_http_response(&format!("{request_id}")),
-                    };
-
                     if user.ref_id() == task.owner_id() {
                         HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task})))
                     } else {
