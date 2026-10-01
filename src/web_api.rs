@@ -743,6 +743,45 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn update_modifies_only_the_target_task() {
+        let username = "update-only-target-username";
+        let password = "update-only-target-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account.");
+
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let first_add = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("first task"), description: None
+        }).to_request();
+        let first_add_response = assert_response_success(test::call_service(&app, first_add).await, "Unable to add first task.");
+        let first_task_id = extract_json_i32(first_add_response, "task_id");
+
+        let second_add = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("second task"), description: None
+        }).to_request();
+        let second_add_response = assert_response_success(test::call_service(&app, second_add).await, "Unable to add second task.");
+        let second_task_id = extract_json_i32(second_add_response, "task_id");
+
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
+            id: first_task_id,
+            auth_key: auth_key.clone(),
+            updates: super::TaskUpdates { completed: Some(true), title: None, description: None },
+        }).to_request();
+        assert_response_success(test::call_service(&app, update_request).await, "Unable to update first task.");
+
+        let get_second = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: auth_key, id: second_task_id
+        }).to_request();
+        let get_second_response = assert_response_success(test::call_service(&app, get_second).await, "Unable to get second task.");
+        let second_task = extract_json_from_constructor(get_second_response, "task", Task::from_json_object).unwrap();
+        assert!(!second_task.completed(), "Updating one task changed another task's completion state");
+        assert_eq!(*second_task.title(), "second task", "Updating one task changed another task's title");
+    }
+
+    #[actix_web::test]
     async fn can_get_all_tasks() {
         let username = "can-get-all-tasks-username";
         let password = "can-get-all-tasks-password";
