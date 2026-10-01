@@ -27,7 +27,10 @@ impl ApplicationError {
         match self {
             ApplicationError::DieselError(e) => {
                 event!(Level::ERROR, "Diesel error: {e}");
-                HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
+                match e {
+                    diesel::result::Error::NotFound => HttpResponse::NotFound().body(format!("{}", json!({"request_id": request_id}))),
+                    _ => HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id}))),
+                }
             },
             ApplicationError::InvalidAuthKey => {
                 event!(Level::ERROR, "Invalid auth key");
