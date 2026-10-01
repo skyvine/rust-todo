@@ -301,7 +301,7 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
             };
 
             match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
-                Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "auth_key": format!("{auth_key}")}))),
+                Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         },
