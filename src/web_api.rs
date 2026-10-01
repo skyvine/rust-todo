@@ -242,7 +242,8 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
             return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
         }
     };
-    let description = TaskDescription::new(std::mem::take(payload.description.as_mut().unwrap_or(&mut String::default())));
+    let description = payload.description.take().map(TaskDescription::new);
+    let description = description.as_ref();
 
     match establish_connection() {
         Ok(mut connection) => {
@@ -251,7 +252,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
                 Err(e) => return e.into_http_response(&format!("{request_id}"))
             };
 
-            match crate::core::add_task(&owner, &title, false, &description, &mut connection) {
+            match crate::core::add_task(&owner, &title, false, description, &mut connection) {
                 Ok(task) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}"), "task_id": task.id()}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }

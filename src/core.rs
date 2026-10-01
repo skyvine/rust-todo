@@ -146,13 +146,13 @@ impl User {
     }
 }
 
-pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: &TaskDescription, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
+pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: Option<&TaskDescription>, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
     use crate::schema::tasks::dsl;
 
     let query =
         diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()),
                                                                 dsl::title.eq(title.as_ref()),
-                                                                dsl::description.eq(description.as_ref()),
+                                                                dsl::description.eq(description.map(AsRef::as_ref)),
                                                                 dsl::completed.eq(completed),
                                                             ));
 
