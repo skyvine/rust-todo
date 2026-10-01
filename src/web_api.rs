@@ -367,13 +367,24 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
     }
 }
 
+/// The fields a client may change on an existing task.
+///
+/// `Default` + `PartialEq` let us check for "no changes requested" without
+/// enumerating fields: adding a new optional field here automatically
+/// extends that check.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+struct TaskUpdates {
+    completed: Option<bool>,
+    title: Option<String>,
+    description: Option<String>,
+}
+
 #[derive(Deserialize, Serialize)]
 struct UpdateTaskPayload {
     id: i32,
     auth_key: String,
-    completed: Option<bool>,
-    title: Option<String>,
-    description: Option<String>,
+    #[serde(flatten)]
+    updates: TaskUpdates,
 }
 
 /// Changes one or more of the task's fields.
@@ -385,7 +396,14 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Update Task", %request_id).entered();
 
-    let title = if let Some(title) = payload.title.as_mut() {
+    // Reject no-op updates without enumerating individual fields: if no
+    // optional field is set, this equals the default (all None).
+    if payload.updates == TaskUpdates::default() {
+        event!(Level::ERROR, "No fields provided to update");
+        return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": "At least one field must be provided"})));
+    }
+
+    let title = if let Some(title) = payload.updates.title.as_mut() {
         match TaskTitle::new(std::mem::take(title)) {
             Ok(title) => Some(title),
             Err(e) => {
@@ -397,7 +415,7 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
         None
     };
 
-    let description = payload.description.as_mut().map(|d| TaskDescription::new(std::mem::take(d)));
+    let description = payload.updates.description.as_mut().map(|d| TaskDescription::new(std::mem::take(d)));
 
     match establish_connection() {
         Ok(mut connection) => {
@@ -406,7 +424,7 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::update_task(&owner, &payload.id, payload.completed, title, description, &mut connection) {
+            match crate::core::update_task(&owner, &payload.id, payload.updates.completed, title, description, &mut connection) {
                 Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
@@ -707,9 +725,11 @@ mod tests {
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
             id: task_id,
             auth_key: auth_key.clone(),
-            completed: completed,
-            title: title,
-            description: description,
+            updates: super::TaskUpdates {
+                completed,
+                title,
+                description,
+            },
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "Unable to update task.");
 
@@ -842,9 +862,11 @@ mod tests {
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
             id: second_task_id,
             auth_key: auth_key.clone(),
-            completed: Some(true),
-            title: None,
-            description: None,
+            updates: super::TaskUpdates {
+                completed: Some(true),
+                title: None,
+                description: None,
+            },
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "Unable to mark second task completed.");
 
