@@ -117,7 +117,6 @@ impl Task {
 #[diesel(table_name = crate::schema::tasks)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct TaskUpdate {
-    id:          i32,
     completed:   Option<bool>,
     title:       Option<String>,
     description: Option<String>,
@@ -377,14 +376,13 @@ pub fn update_task(owner: &User, task_id: &i32, completed: Option<bool>, title: 
     }
 
     let changeset = TaskUpdate {
-        id: task.id,
         completed,
         title: title.map(|t| t.into()),
         description: description.map(|d| d.into()),
     };
 
     let update_query =
-        diesel::update(dsl::tasks).set(changeset);
+        diesel::update(dsl::tasks.filter(dsl::id.eq(task_id))).set(changeset);
 
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&update_query));
 
