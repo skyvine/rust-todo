@@ -174,28 +174,24 @@ pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: &
 pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::users::dsl::*;
 
-    match user_exists(un.as_ref(), connection) {
-        Ok(false) => {
-            let query =
-                diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
+    let query =
+        diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
 
-            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
 
-            let result = query.execute(connection);
-            match result {
-                Ok(_) => {
-                    event!(Level::TRACE, "Query succeeded");
-                    Ok(())
-                },
-                Err(e) => {
-                    Err(ApplicationError::QueryFailed(format!("{e}")))
-                }
-            }
+    match query.execute(connection) {
+        Ok(_) => {
+            event!(Level::TRACE, "Query succeeded");
+            Ok(())
         },
-
-        Ok(true) => Err(ApplicationError::UserExists),
-
-        Err(e) => Err(e)
+        Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation, _)) => {
+            event!(Level::ERROR, "Unable to add user: username already exists");
+            Err(ApplicationError::UserExists)
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
     }
 }
 
