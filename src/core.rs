@@ -200,6 +200,7 @@ pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Res
 
     let query = auth_keys.inner_join(users)
         .filter(key.eq(auth_key))
+        .filter(expiration.gt(diesel::dsl::now))
         .select(( AuthKey::as_select(), User::as_select()));
 
     event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
