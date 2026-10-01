@@ -2,6 +2,7 @@ use crate::core::{
     add_user,
     auth_key_to_user,
     establish_connection,
+    get_incomplete_tasks_for_user,
     get_new_auth_key,
     get_user_by_name,
     ApplicationError,
@@ -99,6 +100,35 @@ pub async fn get_all_tasks(payload: actix_web::web::Json<GetAllTasksPayload>) ->
             };
 
             match crate::core::get_all_tasks_for_user(&user, &mut connection) {
+                Ok(tasks) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "tasks": tasks}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct GetIncompleteTasksPayload {
+    auth_key: String
+}
+
+#[get("/incomplete_tasks")]
+pub async fn get_incomplete_tasks(payload: actix_web::web::Json<GetIncompleteTasksPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get Incomplete Tasks", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match get_incomplete_tasks_for_user(&user, &mut connection) {
                 Ok(tasks) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "tasks": tasks}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
@@ -746,5 +776,52 @@ mod tests {
                 None => panic!("{} is not an array!", v),
             });
         assert_eq!(tasks.len(), 2, "Expected 2 tasks, found {}", tasks.len());
+    }
+
+    #[actix_web::test]
+    async fn can_get_incomplete_tasks() {
+        let username = "can-get-incomplete-tasks-username";
+        let password = "can-get-incomplete-tasks-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account.");
+
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let first_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("task 1"), description: None
+        }).to_request();
+        assert_response_success(test::call_service(&app, first_add_task_request).await, "Unable to add first task.");
+
+        let second_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: auth_key.clone(), title: String::from("task 2"), description: None
+        }).to_request();
+        let second_add_task_response = assert_response_success(test::call_service(&app, second_add_task_request).await, "Unable to add second task.");
+        let second_task_id = extract_json_i32(second_add_task_response, "task_id");
+
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
+            id: second_task_id,
+            auth_key: auth_key.clone(),
+            completed: Some(true),
+            title: None,
+            description: None,
+        }).to_request();
+        assert_response_success(test::call_service(&app, update_request).await, "Unable to mark second task completed.");
+
+        let get_tasks_request = test::TestRequest::get().uri("/incomplete_tasks").set_json(super::GetIncompleteTasksPayload {
+            auth_key: auth_key.clone()
+        }).to_request();
+        let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get incomplete tasks!");
+        let tasks: Vec<Task> = extract_json_from_constructor(get_tasks_response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.into_iter().map(|obj| match Task::from_json_object(obj) {
+                    Ok(task) => task,
+                    Err(e) => panic!("Could not parse task: {e:?}"),
+                }).collect(),
+                None => panic!("{} is not an array!", v),
+            });
+        assert_eq!(tasks.len(), 1, "Expected 1 incomplete task, found {}", tasks.len());
+        assert_eq!(*tasks[0].title(), "task 1");
     }
 }

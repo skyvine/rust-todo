@@ -247,6 +247,22 @@ pub fn get_all_tasks_for_user(user: &User, connection: &mut PgConnection) -> Res
     }
 }
 
+pub fn get_incomplete_tasks_for_user(user: &User, connection: &mut PgConnection) -> Result<Vec<Task>, ApplicationError> {
+    use crate::schema::tasks::dsl::*;
+
+    let query = tasks
+        .filter(owner.eq(user.id))
+        .filter(completed.eq(false))
+        .select(Task::as_select());
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.load::<Task>(connection) {
+        Ok(found_tasks) => Ok(found_tasks),
+        Err(e) => Err(ApplicationError::DieselError(e)),
+    }
+}
+
 pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_password: &argon2::PasswordHash, connection: &mut PgConnection) -> Result<Uuid, ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
 
