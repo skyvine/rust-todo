@@ -17,6 +17,9 @@ macro_rules! build_app {
                 .service(crate::web_api::login)
                 .service(crate::web_api::logout)
                 .service(crate::web_api::register_account)
+                .service(crate::web_api::share_task)
+                .service(crate::web_api::get_task_shares)
+                .service(crate::web_api::unshare_task)
                 .service(crate::web_api::update_task_by_id)
                 .service(crate::web_api::whoami)
     }

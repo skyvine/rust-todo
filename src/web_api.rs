@@ -1,4 +1,5 @@
 use crate::core::{
+    add_share_for_task,
     add_user,
     auth_key_to_user,
     establish_connection,
@@ -6,8 +7,11 @@ use crate::core::{
     get_new_auth_key,
     get_task_permission,
     get_user_by_name,
+    list_shares_for_task,
+    remove_share,
     ApplicationError,
     Permission,
+    SharePermission,
 };
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
@@ -457,6 +461,136 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
                     },
                     other => other.into_http_response(&format!("{request_id}")),
                 },
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+// Share management endpoints
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct ShareTaskPayload {
+    auth_key: String,
+    id: i32,
+    username: String,
+    permission: String,
+}
+
+/// Grants another user access to a task owned by the caller, or replaces
+/// the permission on an existing share.
+#[post("/share_task")]
+pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Share Task", %request_id).entered();
+
+    let permission = match SharePermission::from_stored_text(&payload.permission) {
+        Ok(p) => p,
+        Err(e) => {
+            event!(Level::ERROR, "Invalid permission: {e:?}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": "permission must be \"read\" or \"read_write\""})));
+        }
+    };
+
+    let target = match Username::new(std::mem::take(&mut payload.username)) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+        }
+    };
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
+                Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                // Unauthorized covers both "task doesn't exist" and "not
+                // your task", so the 401 doesn't reveal which.
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct UnshareTaskPayload {
+    auth_key: String,
+    id: i32,
+    username: String,
+}
+
+/// Removes another user's access to a task owned by the caller.
+#[delete("/unshare_task")]
+pub async fn unshare_task(mut payload: actix_web::web::Json<UnshareTaskPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Unshare Task", %request_id).entered();
+
+    let target = match Username::new(std::mem::take(&mut payload.username)) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+        }
+    };
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match remove_share(&owner, &payload.id, &target, &mut connection) {
+                Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct GetTaskSharesPayload {
+    auth_key: String,
+    id: i32,
+}
+
+/// Lists the shares on a task owned by the caller.
+#[get("/task_shares")]
+pub async fn get_task_shares(payload: actix_web::web::Json<GetTaskSharesPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get Task Shares", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match list_shares_for_task(&owner, &payload.id, &mut connection) {
+                Ok(shares) => {
+                    let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
+                        json!({"username": s.username(), "permission": s.permission().as_stored_text()})
+                    }).collect();
+                    HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "shares": shares})))
+                },
+                Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         },
         Err(e) => {
@@ -955,5 +1089,179 @@ mod tests {
             });
         assert_eq!(tasks.len(), 1, "Expected 1 incomplete task, found {}", tasks.len());
         assert_eq!(*tasks[0].title(), "task 1");
+    }
+
+    async fn share_task(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32, username: &str, permission: &str) -> ServiceResponse {
+        let request = test::TestRequest::post().uri("/share_task").set_json(super::ShareTaskPayload {
+            auth_key: String::from(auth_key), id, username: String::from(username), permission: String::from(permission),
+        }).to_request();
+        test::call_service(app, request).await
+    }
+
+    async fn unshare_task(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32, username: &str) -> ServiceResponse {
+        let request = test::TestRequest::delete().uri("/unshare_task").set_json(super::UnshareTaskPayload {
+            auth_key: String::from(auth_key), id, username: String::from(username),
+        }).to_request();
+        test::call_service(app, request).await
+    }
+
+    async fn get_task_shares(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32) -> ServiceResponse {
+        let request = test::TestRequest::get().uri("/task_shares").set_json(super::GetTaskSharesPayload {
+            auth_key: String::from(auth_key), id,
+        }).to_request();
+        test::call_service(app, request).await
+    }
+
+    #[actix_web::test]
+    async fn owner_can_share_and_see_share_listed() {
+        let owner_username = "share-list-owner-username";
+        let grantee_username = "share-list-grantee-username";
+        let password = "share-list-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "Unable to register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+
+        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let shares = body["shares"].as_array().expect("shares should be an array");
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
+        assert_eq!(shares[0]["permission"].as_str().unwrap(), "read");
+    }
+
+    #[actix_web::test]
+    async fn resharing_changes_the_permission() {
+        let owner_username = "reshare-owner-username";
+        let grantee_username = "reshare-grantee-username";
+        let password = "reshare-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "Unable to register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Re-share request failed");
+
+        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let shares = body["shares"].as_array().expect("shares should be an array");
+        assert_eq!(shares.len(), 1, "Re-sharing should replace, not duplicate");
+        assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
+    }
+
+    #[actix_web::test]
+    async fn non_owner_cannot_share_unshare_or_list() {
+        let owner_username = "nonowner-share-owner-username";
+        let non_owner_username = "nonowner-share-nonowner-username";
+        let password = "nonowner-share-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, non_owner_username, password).await, "register non-owner");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let non_owner_key = extract_json_string(assert_response_success(login(&app, non_owner_username, password).await, "login non-owner"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_eq!(share_task(&app, &non_owner_key, task_id, non_owner_username, "read").await.status().as_u16(), 401);
+        assert_eq!(unshare_task(&app, &non_owner_key, task_id, non_owner_username).await.status().as_u16(), 401);
+        assert_eq!(get_task_shares(&app, &non_owner_key, task_id).await.status().as_u16(), 401);
+    }
+
+    #[actix_web::test]
+    async fn unsharing_removes_the_row() {
+        let owner_username = "unshare-owner-username";
+        let grantee_username = "unshare-grantee-username";
+        let password = "unshare-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+        assert_response_success(unshare_task(&app, &owner_key, task_id, grantee_username).await, "Unshare request failed");
+
+        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let shares = body["shares"].as_array().expect("shares should be an array");
+        assert_eq!(shares.len(), 0, "Share row should have been removed");
+    }
+
+    #[actix_web::test]
+    async fn unknown_target_username_gives_404() {
+        let owner_username = "unknown-target-owner-username";
+        let password = "unknown-target-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_eq!(share_task(&app, &owner_key, task_id, "no-such-user", "read").await.status().as_u16(), 404);
+        assert_eq!(unshare_task(&app, &owner_key, task_id, "no-such-user").await.status().as_u16(), 404);
+    }
+
+    #[actix_web::test]
+    async fn missing_task_returns_same_401_as_not_owned() {
+        let owner_username = "oracle-owner-username";
+        let other_username = "oracle-other-username";
+        let password = "oracle-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, other_username, password).await, "register other");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let other_key = extract_json_string(assert_response_success(login(&app, other_username, password).await, "login other"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        // Non-owner trying to manage an existing task
+        let not_owned = share_task(&app, &other_key, task_id, other_username, "read").await;
+        // Anyone trying to manage a missing task
+        let missing = share_task(&app, &owner_key, -1, other_username, "read").await;
+        assert_eq!(not_owned.status().as_u16(), 401);
+        assert_eq!(missing.status().as_u16(), 401);
+
+        let not_owned_list = get_task_shares(&app, &other_key, task_id).await;
+        let missing_list = get_task_shares(&app, &owner_key, -1).await;
+        assert_eq!(not_owned_list.status().as_u16(), 401);
+        assert_eq!(missing_list.status().as_u16(), 401);
+
+        let not_owned_unshare = unshare_task(&app, &other_key, task_id, other_username).await;
+        let missing_unshare = unshare_task(&app, &owner_key, -1, other_username).await;
+        assert_eq!(not_owned_unshare.status().as_u16(), 401);
+        assert_eq!(missing_unshare.status().as_u16(), 401);
     }
 }

@@ -511,6 +511,127 @@ pub fn update_task(owner: &User, task_id: &i32, completed: Option<bool>, title: 
     }
 }
 
+/// Verify that `owner` owns the task `task_id`, without revealing whether
+/// the task exists. Both a missing task and a task owned by someone else
+/// produce `ApplicationError::Unauthorized`.
+fn require_task_owner(owner: &User, task_id: &i32, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+    match get_task_by_id(task_id, connection) {
+        Ok(task) => {
+            if task.owner_id() == owner.ref_id() {
+                Ok(())
+            } else {
+                Err(ApplicationError::Unauthorized)
+            }
+        },
+        Err(ApplicationError::DieselError(diesel::result::Error::NotFound)) => {
+            Err(ApplicationError::Unauthorized)
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Grant `target` access to the caller's task, or replace the existing
+/// permission if a share row already exists (upsert semantics).
+pub fn add_share_for_task(owner: &User, task_id: &i32, target: &Username, permission: SharePermission, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+    require_task_owner(owner, task_id, connection)?;
+
+    // Unknown target username: 404. That's acceptable because usernames
+    // are public information, and sharing requires naming the target user.
+    let target_user = get_user_by_name(target, connection)?;
+
+    use crate::schema::task_shares::dsl::{self, task_shares};
+
+    let query = diesel::insert_into(task_shares)
+        .values((dsl::task_id.eq(task_id), dsl::user_id.eq(target_user.ref_id()), dsl::permission.eq(permission)))
+        .on_conflict((dsl::task_id, dsl::user_id))
+        .do_update()
+        .set(dsl::permission.eq(permission));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.execute(connection) {
+        Ok(_) => {
+            event!(Level::TRACE, "Query succeeded");
+            Ok(())
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
+}
+
+/// Remove the share row granting `target` access to the caller's task.
+/// A missing share row on a task the caller owns is a 404.
+pub fn remove_share(owner: &User, task_id: &i32, target: &Username, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+    require_task_owner(owner, task_id, connection)?;
+
+    let target_user = get_user_by_name(target, connection)?;
+
+    use crate::schema::task_shares::dsl::{self, task_shares};
+
+    let query = diesel::delete(task_shares)
+        .filter(dsl::task_id.eq(task_id))
+        .filter(dsl::user_id.eq(target_user.ref_id()));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.execute(connection) {
+        Ok(0) => {
+            event!(Level::ERROR, "No share row found to delete");
+            Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+        },
+        Ok(_) => {
+            event!(Level::TRACE, "Query succeeded");
+            Ok(())
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
+}
+
+/// One row of the share listing for a task.
+#[derive(Clone, Debug)]
+pub struct TaskShareInfo {
+    username: String,
+    permission: SharePermission,
+}
+
+impl TaskShareInfo {
+    pub fn username(&self) -> &String {
+        &self.username
+    }
+
+    pub fn permission(&self) -> SharePermission {
+        self.permission
+    }
+}
+
+/// List all shares for a task owned by the caller.
+pub fn list_shares_for_task(owner: &User, task_id: &i32, connection: &mut PgConnection) -> Result<Vec<TaskShareInfo>, ApplicationError> {
+    require_task_owner(owner, task_id, connection)?;
+
+    use crate::schema::task_shares::dsl as share_dsl;
+    use crate::schema::users::dsl as user_dsl;
+
+    let query = share_dsl::task_shares
+        .inner_join(user_dsl::users)
+        .filter(share_dsl::task_id.eq(task_id))
+        .select((user_dsl::username, share_dsl::permission));
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.load::<(String, SharePermission)>(connection) {
+        Ok(rows) => Ok(rows.into_iter().map(|(username, permission)| TaskShareInfo { username, permission }).collect()),
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
+}
+
 /// Returns true if a user with the given name exists, false otherwise.
 pub fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, ApplicationError> {
     use crate::schema::users::dsl::*;
