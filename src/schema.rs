@@ -10,6 +10,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    task_shares (id) {
+        id -> Int4,
+        task_id -> Int4,
+        user_id -> Int4,
+        permission -> Text,
+    }
+}
+
+diesel::table! {
     tasks (id) {
         id -> Int4,
         owner -> Int4,
@@ -30,10 +39,13 @@ diesel::table! {
 }
 
 diesel::joinable!(auth_keys -> users (user_id));
+diesel::joinable!(task_shares -> tasks (task_id));
+diesel::joinable!(task_shares -> users (user_id));
 diesel::joinable!(tasks -> users (owner));
 
 diesel::allow_tables_to_appear_in_same_query!(
     auth_keys,
+    task_shares,
     tasks,
     users,
 );

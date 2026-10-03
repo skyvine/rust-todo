@@ -122,6 +122,84 @@ pub struct TaskUpdate {
     description: Option<String>,
 }
 
+/// The level of access granted by a task share, stored as text in `task_shares.permission`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, diesel::expression::AsExpression, diesel::deserialize::FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
+pub enum SharePermission {
+    Read,
+    ReadWrite,
+}
+
+impl SharePermission {
+    /// Parse the stored text value (`"read"` or `"read_write"`).
+    pub fn from_stored_text(text: &str) -> Result<Self, ApplicationError> {
+        match text {
+            "read" => Ok(SharePermission::Read),
+            "read_write" => Ok(SharePermission::ReadWrite),
+            other => Err(ApplicationError::InvalidData(format!("Unknown share permission: {other}"))),
+        }
+    }
+
+    /// The text value stored in the database.
+    pub fn as_stored_text(&self) -> &'static str {
+        match self {
+            SharePermission::Read => "read",
+            SharePermission::ReadWrite => "read_write",
+        }
+    }
+}
+
+impl diesel::deserialize::FromSql<diesel::sql_types::Text, diesel::pg::Pg> for SharePermission {
+    fn from_sql(bytes: diesel::pg::PgValue<'_>) -> diesel::deserialize::Result<Self> {
+        let text = <String as diesel::deserialize::FromSql<diesel::sql_types::Text, diesel::pg::Pg>>::from_sql(bytes)?;
+        SharePermission::from_stored_text(&text).map_err(|e| match e {
+            ApplicationError::InvalidData(msg) => msg.into(),
+            other => format!("{other:?}").into(),
+        })
+    }
+}
+
+impl diesel::serialize::ToSql<diesel::sql_types::Text, diesel::pg::Pg> for SharePermission {
+    fn to_sql<'b>(&'b self, out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>) -> diesel::serialize::Result {
+        use std::io::Write;
+        out.write_all(self.as_stored_text().as_bytes())?;
+        Ok(diesel::serialize::IsNull::No)
+    }
+}
+
+/// A complete entry from the task_shares table in the database
+#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize, Queryable, Selectable, Serialize)]
+#[diesel(table_name = crate::schema::task_shares)]
+#[diesel(belongs_to(Task))]
+#[diesel(belongs_to(User))]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct TaskShare {
+    id:         i32,
+    task_id:    i32,
+    user_id:    i32,
+    permission: SharePermission,
+}
+
+#[allow(dead_code)]
+impl TaskShare {
+    pub fn id(&self) -> &i32 {
+        &self.id
+    }
+
+    pub fn task_id(&self) -> &i32 {
+        &self.task_id
+    }
+
+    pub fn user_id(&self) -> &i32 {
+        &self.user_id
+    }
+
+    pub fn permission(&self) -> SharePermission {
+        self.permission
+    }
+}
+
 /// A complete entry from the users table in the database
 #[derive(Clone, Queryable, Selectable, ZeroizeOnDrop)]
 #[diesel(table_name = crate::schema::users)]
@@ -407,5 +485,42 @@ pub fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool,
     match query.load(connection) {
         Ok(collection) => Ok(!collection.is_empty()),
         Err(e) => Err(ApplicationError::DieselError(e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain_types::{TaskTitle, Username};
+
+    #[test]
+    fn task_shares_insert_select_and_unique_constraint() {
+        let connection = &mut establish_connection().expect("Unable to connect to database");
+
+        let username = Username::new(format!("share_test_{}", Uuid::new_v4())).unwrap();
+        add_user(&username, &String::from("not-a-real-hash"), connection).unwrap();
+        let user = get_user_by_name(&username, connection).unwrap();
+        let title = TaskTitle::new(String::from("share test task")).unwrap();
+        let task = add_task(&user, &title, false, None, connection).unwrap();
+
+        use crate::schema::task_shares::dsl::*;
+        diesel::insert_into(task_shares)
+            .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(SharePermission::Read)))
+            .execute(connection)
+            .expect("Unable to insert task_shares row");
+
+        let found: Vec<TaskShare> = task_shares
+            .select(TaskShare::as_select())
+            .filter(task_id.eq(task.id()))
+            .load(connection)
+            .expect("Unable to select task_shares rows");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].permission(), SharePermission::Read);
+
+        // The UNIQUE (task_id, user_id) constraint must reject a duplicate pair
+        let duplicate = diesel::insert_into(task_shares)
+            .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(SharePermission::ReadWrite)))
+            .execute(connection);
+        assert!(duplicate.is_err());
     }
 }
