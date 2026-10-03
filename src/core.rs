@@ -224,6 +224,57 @@ impl User {
     }
 }
 
+/// What a user is allowed to do with a particular task.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Permission {
+    Owner,
+    ReadWrite,
+    ReadOnly,
+    None,
+}
+
+/// Resolve the effective permission a user has on a task.
+///
+/// - `Permission::Owner` if the user owns the task,
+/// - otherwise the share row for (task_id, user_id), mapped
+///   `read` -> `ReadOnly`, `read_write` -> `ReadWrite`,
+/// - `Permission::None` when there is no share row.
+///
+/// Returns `ApplicationError::DieselError(NotFound)` if the task does not
+/// exist, so callers can keep hiding task existence behind a uniform 401.
+pub fn get_task_permission(user: &User, task_id: &i32, connection: &mut PgConnection) -> Result<Permission, ApplicationError> {
+    let task = get_task_by_id(task_id, connection)?;
+
+    if task.owner_id() == user.ref_id() {
+        return Ok(Permission::Owner);
+    }
+
+    use crate::schema::task_shares::dsl::{self, task_shares};
+
+    let query = task_shares
+        .filter(dsl::task_id.eq(task_id))
+        .filter(dsl::user_id.eq(user.ref_id()))
+        .select(TaskShare::as_select());
+
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.load::<TaskShare>(connection) {
+        Ok(rows) => {
+            match rows.into_iter().next() {
+                Some(share) => match share.permission() {
+                    SharePermission::Read => Ok(Permission::ReadOnly),
+                    SharePermission::ReadWrite => Ok(Permission::ReadWrite),
+                },
+                None => Ok(Permission::None),
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query failed while looking up task share: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
+}
+
 pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: Option<&TaskDescription>, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
     use crate::schema::tasks::dsl;
 
@@ -429,29 +480,12 @@ pub fn logout(auth_key: &String, connection: &mut PgConnection) -> Result<(), Ap
 pub fn update_task(owner: &User, task_id: &i32, completed: Option<bool>, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 
-    // Make sure the given user actually owns the task
-    let fetch_query = dsl::tasks
-        .filter(dsl::id.eq(task_id))
-        .select(Task::as_select());
-
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&fetch_query));
-
-    let task = match fetch_query.load::<Task>(connection) {
-        Ok(found_tasks) => {
-            if !(found_tasks.is_empty()) {
-                found_tasks.into_iter().next().unwrap()
-            } else {
-                return Err(ApplicationError::DieselError(diesel::result::Error::NotFound));
-            }
-        },
-        Err(e) => {
-            event!(Level::ERROR, "Query failed while getting task by id: {e}");
-            return Err(ApplicationError::DieselError(e));
-        }
-    };
-
-    if task.owner != owner.id {
-        return Err(ApplicationError::Unauthorized);
+    // Only the owner may update the task. Shared (read or read-write)
+    // users are not owners, so they still get Unauthorized here.
+    match get_task_permission(owner, task_id, connection) {
+        Ok(Permission::Owner) => (),
+        Ok(_) => return Err(ApplicationError::Unauthorized),
+        Err(e) => return Err(e),
     }
 
     let changeset = TaskUpdate {
@@ -493,15 +527,27 @@ mod tests {
     use super::*;
     use crate::domain_types::{TaskTitle, Username};
 
+    fn make_user_and_task(connection: &mut PgConnection, label: &str) -> (User, crate::core::Task) {
+        let username = Username::new(format!("perm_{}_{}", label, Uuid::new_v4())).unwrap();
+        add_user(&username, &String::from("not-a-real-hash"), connection).unwrap();
+        let user = get_user_by_name(&username, connection).unwrap();
+        let title = TaskTitle::new(format!("permission test task {label}")).unwrap();
+        let task = add_task(&user, &title, false, None, connection).unwrap();
+        (user, task)
+    }
+
+    fn share_task(connection: &mut PgConnection, task: &crate::core::Task, user: &User, perm: SharePermission) {
+        use crate::schema::task_shares::dsl::*;
+        diesel::insert_into(task_shares)
+            .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(perm)))
+            .execute(connection)
+            .expect("Unable to insert task_shares row");
+    }
+
     #[test]
     fn task_shares_insert_select_and_unique_constraint() {
         let connection = &mut establish_connection().expect("Unable to connect to database");
-
-        let username = Username::new(format!("share_test_{}", Uuid::new_v4())).unwrap();
-        add_user(&username, &String::from("not-a-real-hash"), connection).unwrap();
-        let user = get_user_by_name(&username, connection).unwrap();
-        let title = TaskTitle::new(String::from("share test task")).unwrap();
-        let task = add_task(&user, &title, false, None, connection).unwrap();
+        let (user, task) = make_user_and_task(connection, "share_test");
 
         use crate::schema::task_shares::dsl::*;
         diesel::insert_into(task_shares)
@@ -522,5 +568,45 @@ mod tests {
             .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(SharePermission::ReadWrite)))
             .execute(connection);
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn permission_is_owner_for_task_owner() {
+        let connection = &mut establish_connection().expect("Unable to connect to database");
+        let (user, task) = make_user_and_task(connection, "owner");
+        let perm = get_task_permission(&user, task.id(), connection).unwrap();
+        assert_eq!(perm, Permission::Owner);
+    }
+
+    #[test]
+    fn permission_is_read_write_for_read_write_share() {
+        let connection = &mut establish_connection().expect("Unable to connect to database");
+        let (owner, task) = make_user_and_task(connection, "rw_owner");
+        let (grantee, _) = make_user_and_task(connection, "rw_grantee");
+        share_task(connection, &task, &grantee, SharePermission::ReadWrite);
+        let perm = get_task_permission(&grantee, task.id(), connection).unwrap();
+        assert_eq!(perm, Permission::ReadWrite);
+        // The owner still reports Owner, not ReadWrite.
+        let owner_perm = get_task_permission(&owner, task.id(), connection).unwrap();
+        assert_eq!(owner_perm, Permission::Owner);
+    }
+
+    #[test]
+    fn permission_is_read_only_for_read_share() {
+        let connection = &mut establish_connection().expect("Unable to connect to database");
+        let (_, task) = make_user_and_task(connection, "ro_owner");
+        let (grantee, _) = make_user_and_task(connection, "ro_grantee");
+        share_task(connection, &task, &grantee, SharePermission::Read);
+        let perm = get_task_permission(&grantee, task.id(), connection).unwrap();
+        assert_eq!(perm, Permission::ReadOnly);
+    }
+
+    #[test]
+    fn permission_is_none_without_relationship() {
+        let connection = &mut establish_connection().expect("Unable to connect to database");
+        let (_, task) = make_user_and_task(connection, "none_owner");
+        let (stranger, _) = make_user_and_task(connection, "none_stranger");
+        let perm = get_task_permission(&stranger, task.id(), connection).unwrap();
+        assert_eq!(perm, Permission::None);
     }
 }

@@ -4,8 +4,10 @@ use crate::core::{
     establish_connection,
     get_incomplete_tasks_for_user,
     get_new_auth_key,
+    get_task_permission,
     get_user_by_name,
     ApplicationError,
+    Permission,
 };
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
@@ -166,15 +168,20 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::get_task_by_id(&payload.id, &mut connection) {
-                Ok(task) => {
-                    if user.ref_id() == task.owner_id() {
-                        HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task})))
-                    } else {
-                        event!(Level::ERROR, "Cannot get task {}, belongs to user {} but requested by user {}", task.id(), task.owner_id(), user.ref_id());
-                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            // No new shared-access behavior yet: only the owner may view
+            // the task; any other permission (read, read-write, none) is
+            // a 401, same as before.
+            match get_task_permission(&user, &payload.id, &mut connection) {
+                Ok(Permission::Owner) => {
+                    match crate::core::get_task_by_id(&payload.id, &mut connection) {
+                        Ok(task) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task}))),
+                        Err(e) => e.into_http_response(&format!("{request_id}")),
                     }
-                }
+                },
+                Ok(_) => {
+                    event!(Level::ERROR, "Cannot get task {}: user {} has no owner access", payload.id, user.ref_id());
+                    HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                },
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
                     // task": both are the same 401 to avoid leaking which
