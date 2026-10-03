@@ -175,7 +175,16 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
                         HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
                     }
                 }
-                Err(e) => e.into_http_response(&format!("{request_id}")),
+                Err(e) => match e {
+                    // Don't distinguish "task doesn't exist" from "not your
+                    // task": both are the same 401 to avoid leaking which
+                    // task IDs exist.
+                    ApplicationError::DieselError(diesel::result::Error::NotFound) => {
+                        event!(Level::ERROR, "Cannot get task {}: not found", payload.id);
+                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    },
+                    other => other.into_http_response(&format!("{request_id}")),
+                },
             }
         }
         Err(e) => {
@@ -431,7 +440,16 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
 
             match crate::core::update_task(&owner, &payload.id, payload.updates.completed, title, description, &mut connection) {
                 Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
+                Err(e) => match e {
+                    // Don't distinguish "task doesn't exist" from "not your
+                    // task": both are the same 401 to avoid leaking which
+                    // task IDs exist.
+                    ApplicationError::DieselError(diesel::result::Error::NotFound) => {
+                        event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
+                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    },
+                    other => other.into_http_response(&format!("{request_id}")),
+                },
             }
         },
         Err(e) => {
@@ -710,6 +728,47 @@ mod tests {
         }).to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
         assert!(get_task_response.status().is_client_error(), "Getting task did not indicate client error.");
+    }
+
+    #[actix_web::test]
+    async fn cannot_get_nonexistent_task() {
+        let username = "cannot-get-nonexistent-task-username";
+        let password = "cannot-get-nonexistent-task-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key, id: -1
+        }).to_request();
+        let get_task_response = test::call_service(&app, get_task_request).await;
+        // A missing task must look the same as a task owned by someone else: 401, not 404.
+        assert_eq!(get_task_response.status().as_u16(), 401, "Getting a nonexistent task should not reveal its nonexistence.");
+    }
+
+    #[actix_web::test]
+    async fn cannot_update_nonexistent_task() {
+        let username = "cannot-update-nonexistent-task-username";
+        let password = "cannot-update-nonexistent-task-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
+            id: -1,
+            auth_key,
+            updates: super::TaskUpdates {
+                completed: Some(true),
+                title: None,
+                description: None,
+            },
+        }).to_request();
+        let update_response = test::call_service(&app, update_request).await;
+        assert_eq!(update_response.status().as_u16(), 401, "Updating a nonexistent task should not reveal its nonexistence.");
     }
 
     // TODO: Return the updated task so it can be verified
