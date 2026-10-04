@@ -688,6 +688,12 @@ mod tests {
         }
     }
 
+    async fn register_and_login<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> String {
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        extract_json_string(login_response, "auth_key")
+    }
+
     async fn register<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
         let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: String::from(username),
@@ -796,10 +802,7 @@ mod tests {
         let app =
             test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
-
-        let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
         let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
             auth_key,
@@ -828,10 +831,7 @@ mod tests {
         let password = "can-logout-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
-
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
         
         let logout_request = test::TestRequest::delete().uri("/logout").set_json(super::LogoutPayload { auth_key: auth_key.clone() }).to_request();
         assert_response_success(test::call_service(&app, logout_request).await, "Unable to log out.");
@@ -848,10 +848,7 @@ mod tests {
         let app =
             test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
-
-        let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
         assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
     }
@@ -870,10 +867,7 @@ mod tests {
         let app =
             test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username.as_str(), password.as_str()).await, "Unable to register account");
-
-        let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
         let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
 
@@ -894,17 +888,13 @@ mod tests {
         let non_owner_password = "cannot-get-different-users-task-non-owner-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, owner_password).await, "Unable to register owner account");
-        assert_response_success(register(&app, non_owner_username, non_owner_password).await, "Unable to register non-owner account");
 
-        let owner_login_response = assert_response_success(login(&app, owner_username, owner_password).await, "Could not login as owner.");
-        let owner_auth_key = extract_json_string(owner_login_response, "auth_key");
+        let owner_auth_key = register_and_login(&app, owner_username, owner_password).await;
 
         let add_task_response = assert_response_success(add_task(&app, &owner_auth_key, "test title", Some("test description")).await, "Unable to add task.");
         let task_id = extract_json_i32(add_task_response, "task_id");
 
-        let non_owner_login_response = assert_response_success(login(&app, non_owner_username, non_owner_password).await, "Could not login as non-owner.");
-        let non_owner_auth_key = extract_json_string(non_owner_login_response, "auth_key");
+        let non_owner_auth_key = register_and_login(&app, non_owner_username, non_owner_password).await;
 
         let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
             auth_key: non_owner_auth_key, id: task_id
@@ -919,9 +909,7 @@ mod tests {
         let password = "cannot-get-nonexistent-task-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
             auth_key, id: -1
@@ -937,9 +925,7 @@ mod tests {
         let password = "cannot-update-nonexistent-task-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
             id: -1,
@@ -958,10 +944,7 @@ mod tests {
     async fn update_task(username: &str, password: &str, completed: Option<bool>, title: Option<String>, description: Option<String>) -> Task {
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account.");
-
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
         let task_id = extract_json_i32(add_task_response, "task_id");
@@ -1012,10 +995,7 @@ mod tests {
         let password = "update-only-target-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account.");
-
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         let first_add_response = assert_response_success(add_task(&app, &auth_key, "first task", None).await, "Unable to add first task.");
         let first_task_id = extract_json_i32(first_add_response, "task_id");
@@ -1045,10 +1025,7 @@ mod tests {
         let password = "can-get-all-tasks-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account.");
-
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         assert_response_success(add_task(&app, &auth_key, "task 1", None).await, "Unable to add first task.");
 
@@ -1068,10 +1045,7 @@ mod tests {
         let password = "can-get-incomplete-tasks-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account.");
-
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         assert_response_success(add_task(&app, &auth_key, "task 1", None).await, "Unable to add first task.");
 
@@ -1126,10 +1100,9 @@ mod tests {
         let password = "share-list-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "Unable to register owner");
         assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
@@ -1149,10 +1122,9 @@ mod tests {
         let password = "reshare-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "Unable to register owner");
         assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
@@ -1172,11 +1144,9 @@ mod tests {
         let password = "nonowner-share-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, non_owner_username, password).await, "register non-owner");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let non_owner_key = extract_json_string(assert_response_success(login(&app, non_owner_username, password).await, "login non-owner"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let non_owner_key = register_and_login(&app, non_owner_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1193,10 +1163,9 @@ mod tests {
         let password = "unshare-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+        assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
         let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
@@ -1214,8 +1183,7 @@ mod tests {
         let password = "unknown-target-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
         let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
@@ -1230,11 +1198,9 @@ mod tests {
         let password = "oracle-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, other_username, password).await, "register other");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let other_key = extract_json_string(assert_response_success(login(&app, other_username, password).await, "login other"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let other_key = register_and_login(&app, other_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1264,11 +1230,9 @@ mod tests {
         let password = "rw-update-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let grantee_key = register_and_login(&app, grantee_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", Some("original description")).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1303,11 +1267,9 @@ mod tests {
         let password = "ro-update-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let grantee_key = register_and_login(&app, grantee_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1343,11 +1305,9 @@ mod tests {
         let password = "unrelated-update-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, stranger_username, password).await, "register stranger");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let stranger_key = extract_json_string(assert_response_success(login(&app, stranger_username, password).await, "login stranger"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let stranger_key = register_and_login(&app, stranger_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1381,11 +1341,9 @@ mod tests {
         let password = "rw-manage-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let grantee_key = register_and_login(&app, grantee_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1421,11 +1379,9 @@ mod tests {
         let password = "read-share-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let grantee_key = register_and_login(&app, grantee_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1465,11 +1421,9 @@ mod tests {
         let password = "rw-share-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let grantee_key = register_and_login(&app, grantee_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1497,11 +1451,9 @@ mod tests {
         let password = "no-share-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
-        assert_response_success(register(&app, stranger_username, password).await, "register stranger");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let stranger_key = extract_json_string(assert_response_success(login(&app, stranger_username, password).await, "login stranger"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let stranger_key = register_and_login(&app, stranger_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
@@ -1527,9 +1479,8 @@ mod tests {
         let password = "stale-share-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, owner_username, password).await, "register owner");
 
-        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let owner_key = register_and_login(&app, owner_username, password).await;
 
         let add_response = assert_response_success(add_task(&app, &owner_key, "owned task", None).await, "add task");
         let owned_task_id = extract_json_i32(add_response, "task_id");
@@ -1561,9 +1512,7 @@ mod tests {
         let password = "user-by-id-existing-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         // Look up the user's id directly (usernames are the public handle;
         // task/share payloads carry the id).
@@ -1589,9 +1538,7 @@ mod tests {
         let password = "user-by-id-unknown-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let auth_key = register_and_login(&app, username, password).await;
 
         let request = test::TestRequest::get().uri("/user_by_id").set_json(super::GetUserByIdPayload {
             auth_key,
