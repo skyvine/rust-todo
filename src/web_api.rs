@@ -730,6 +730,17 @@ mod tests {
         }
     }
 
+    fn extract_json_tasks(response: ServiceResponse) -> Vec<Task> {
+        extract_json_from_constructor(response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.iter().map(|obj| match Task::from_json_object(obj) {
+                    Ok(task) => task,
+                    Err(e) => panic!("Could not parse task: {e:?}"),
+                }).collect(),
+                None => panic!("{} is not an array!", v),
+            })
+    }
+
     fn extract_json_i32(response: ServiceResponse, key: &str) -> i32 {
         extract_json_from_constructor(response, key, |v|
             match v.as_i64() {
@@ -1042,14 +1053,7 @@ mod tests {
             auth_key: auth_key.clone()
         }).to_request();
         let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get tasks!");
-        let tasks: Vec<Task> = extract_json_from_constructor(get_tasks_response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.into_iter().map(|obj| match Task::from_json_object(obj) {
-                    Ok(task) => task,
-                    Err(e) => panic!("Could not parse task: {e:?}"),
-                }).collect(),
-                None => panic!("{} is not an array!", v),
-            });
+        let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
         assert_eq!(tasks.len(), 2, "Expected 2 tasks, found {}", tasks.len());
     }
 
@@ -1084,14 +1088,7 @@ mod tests {
             auth_key: auth_key.clone()
         }).to_request();
         let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get incomplete tasks!");
-        let tasks: Vec<Task> = extract_json_from_constructor(get_tasks_response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.into_iter().map(|obj| match Task::from_json_object(obj) {
-                    Ok(task) => task,
-                    Err(e) => panic!("Could not parse task: {e:?}"),
-                }).collect(),
-                None => panic!("{} is not an array!", v),
-            });
+        let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
         assert_eq!(tasks.len(), 1, "Expected 1 incomplete task, found {}", tasks.len());
         assert_eq!(*tasks[0].title(), "task 1");
     }
@@ -1448,11 +1445,7 @@ mod tests {
             auth_key: grantee_key.clone(),
         }).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
-        let tasks: Vec<Task> = extract_json_from_constructor(list_response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
-                None => panic!("not an array"),
-            });
+        let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
         assert_eq!(*tasks[0].id(), task_id);
 
@@ -1460,11 +1453,7 @@ mod tests {
             auth_key: grantee_key,
         }).to_request();
         let incomplete_response = assert_response_success(test::call_service(&app, incomplete_request).await, "list grantee incomplete tasks");
-        let incomplete: Vec<Task> = extract_json_from_constructor(incomplete_response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
-                None => panic!("not an array"),
-            });
+        let incomplete: Vec<Task> = extract_json_tasks(incomplete_response);
         assert_eq!(incomplete.len(), 1);
         assert_eq!(*incomplete[0].id(), task_id);
     }
@@ -1496,11 +1485,7 @@ mod tests {
             auth_key: grantee_key,
         }).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
-        let tasks: Vec<Task> = extract_json_from_constructor(list_response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
-                None => panic!("not an array"),
-            });
+        let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
         assert_eq!(*tasks[0].id(), task_id);
     }
@@ -1566,11 +1551,7 @@ mod tests {
             auth_key: owner_key.clone(),
         }).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list owner tasks");
-        let tasks: Vec<Task> = extract_json_from_constructor(list_response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
-                None => panic!("not an array"),
-            });
+        let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1, "Owner's task should appear exactly once even with a stale share row");
     }
 
