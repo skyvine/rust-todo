@@ -157,7 +157,8 @@ struct GetTaskByIdPayload {
 
 /// Returns a specific task based on the ID of the given task.
 /// 
-/// The user must be logged in as the task's owner in order to get the task.
+/// The user must be logged in as the task's owner or have a share on
+/// the task in order to get the task.
 #[get("/task_by_id")]
 pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -172,18 +173,17 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            // No new shared-access behavior yet: only the owner may view
-            // the task; any other permission (read, read-write, none) is
-            // a 401, same as before.
+            // Owner, read-only, and read-write share holders may all view
+            // the task; anyone else gets the same 401.
             match get_task_permission(&user, &payload.id, &mut connection) {
-                Ok(Permission::Owner) => {
+                Ok(Permission::Owner) | Ok(Permission::ReadOnly) | Ok(Permission::ReadWrite) => {
                     match crate::core::get_task_by_id(&payload.id, &mut connection) {
                         Ok(task) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task}))),
                         Err(e) => e.into_http_response(&format!("{request_id}")),
                     }
                 },
                 Ok(_) => {
-                    event!(Level::ERROR, "Cannot get task {}: user {} has no owner access", payload.id, user.ref_id());
+                    event!(Level::ERROR, "Cannot get task {}: user {} has no task access", payload.id, user.ref_id());
                     HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
                 },
                 Err(e) => match e {
@@ -1263,5 +1263,170 @@ mod tests {
         let missing_unshare = unshare_task(&app, &owner_key, -1, other_username).await;
         assert_eq!(not_owned_unshare.status().as_u16(), 401);
         assert_eq!(missing_unshare.status().as_u16(), 401);
+    }
+
+    #[actix_web::test]
+    async fn read_share_grants_get_and_listing_access() {
+        let owner_username = "read-share-owner-username";
+        let grantee_username = "read-share-grantee-username";
+        let password = "read-share-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+
+        // The grantee can now fetch the task directly...
+        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: grantee_key.clone(), id: task_id,
+        }).to_request();
+        let get_response = assert_response_success(test::call_service(&app, get_request).await, "grantee should be able to get the shared task");
+        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        assert_eq!(*task.id(), task_id);
+
+        // ...and it shows up in their listings.
+        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
+            auth_key: grantee_key.clone(),
+        }).to_request();
+        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
+        let tasks: Vec<Task> = extract_json_from_constructor(list_response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
+                None => panic!("not an array"),
+            });
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(*tasks[0].id(), task_id);
+
+        let incomplete_request = test::TestRequest::get().uri("/incomplete_tasks").set_json(super::GetIncompleteTasksPayload {
+            auth_key: grantee_key,
+        }).to_request();
+        let incomplete_response = assert_response_success(test::call_service(&app, incomplete_request).await, "list grantee incomplete tasks");
+        let incomplete: Vec<Task> = extract_json_from_constructor(incomplete_response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
+                None => panic!("not an array"),
+            });
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(*incomplete[0].id(), task_id);
+    }
+
+    #[actix_web::test]
+    async fn read_write_share_grants_get_and_listing_access() {
+        let owner_username = "rw-share-owner-username";
+        let grantee_username = "rw-share-grantee-username";
+        let password = "rw-share-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
+
+        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: grantee_key.clone(), id: task_id,
+        }).to_request();
+        assert_response_success(test::call_service(&app, get_request).await, "read_write grantee should be able to get the task");
+
+        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
+            auth_key: grantee_key,
+        }).to_request();
+        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
+        let tasks: Vec<Task> = extract_json_from_constructor(list_response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
+                None => panic!("not an array"),
+            });
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(*tasks[0].id(), task_id);
+    }
+
+    #[actix_web::test]
+    async fn no_share_means_401_and_no_listing_entry() {
+        let owner_username = "no-share-owner-username";
+        let stranger_username = "no-share-stranger-username";
+        let password = "no-share-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, stranger_username, password).await, "register stranger");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let stranger_key = extract_json_string(assert_response_success(login(&app, stranger_username, password).await, "login stranger"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key, title: String::from("private task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: stranger_key.clone(), id: task_id,
+        }).to_request();
+        let get_response = test::call_service(&app, get_request).await;
+        assert_eq!(get_response.status().as_u16(), 401);
+
+        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
+            auth_key: stranger_key,
+        }).to_request();
+        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list stranger tasks");
+        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let tasks = body["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 0, "Stranger should not see the task in listings");
+    }
+
+    #[actix_web::test]
+    async fn owner_listings_never_duplicate_with_stale_share_row() {
+        let owner_username = "stale-share-owner-username";
+        let password = "stale-share-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("owned task"), description: None,
+        }).to_request()).await, "add task");
+        let owned_task_id = extract_json_i32(add_response, "task_id");
+
+        // Simulate a stale share row granting the owner access to their own
+        // task by inserting it directly; the owner's listing must not
+        // duplicate the task.
+        let mut connection = super::establish_connection().expect("db connection");
+        let stale_owner = super::auth_key_to_user(&owner_key, &mut connection).unwrap();
+        use crate::schema::task_shares::dsl::*;
+        use diesel::prelude::*;
+        diesel::insert_into(task_shares)
+            .values((task_id.eq(&owned_task_id), user_id.eq(stale_owner.ref_id()), permission.eq(crate::core::SharePermission::Read)))
+            .execute(&mut connection)
+            .expect("insert stale share row");
+        drop(connection);
+
+        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
+            auth_key: owner_key.clone(),
+        }).to_request();
+        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list owner tasks");
+        let tasks: Vec<Task> = extract_json_from_constructor(list_response, "tasks", |v|
+            match v.as_array() {
+                Some(a) => a.iter().map(|obj| Task::from_json_object(obj).unwrap()).collect(),
+                None => panic!("not an array"),
+            });
+        assert_eq!(tasks.len(), 1, "Owner's task should appear exactly once even with a stale share row");
     }
 }
