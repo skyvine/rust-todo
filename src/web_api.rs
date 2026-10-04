@@ -680,6 +680,14 @@ mod tests {
         response
     }
 
+    fn assert_client_error(response: ServiceResponse, message: &str) {
+        if !response.status().is_client_error() {
+            let formatted_response = format!("{response:?}");
+            let body = response.into_body();
+            panic!("{message}: {formatted_response}{body:?}")
+        }
+    }
+
     async fn register<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
         let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
             username: String::from(username),
@@ -753,11 +761,7 @@ mod tests {
         assert_response_success(register(&app, name.as_str(), password.as_str()).await, "Failed to register the account once.");
 
         let response = register(&app, name.as_str(), password.as_str()).await;
-        if !response.status().is_client_error() {
-            let formatted_response = format!("{response:?}");
-            let body = response.into_body();
-            panic!("Response did not indicate client failure: {formatted_response}{body:?}")
-        }
+        assert_client_error(response, "Response did not indicate client failure");
     }
 
     #[actix_web::test]
@@ -790,11 +794,7 @@ mod tests {
         assert_response_success(register(&app, username, password).await, "Unable to register account");
 
         let response = login(&app, username, "not-the-correct-password").await;
-        if !response.status().is_client_error() {
-            let formatted_response = format!("{response:?}");
-            let body = response.into_body();
-            panic!("Response did not indicate client error: {formatted_response}{body:?}")
-        }
+        assert_client_error(response, "Response did not indicate client error");
     }
 
     #[actix_web::test]
@@ -841,11 +841,7 @@ mod tests {
             auth_key: String::from("this-is-not-a-valid-auth-key"), title: String::from("test title"), description: Some(String::from("test description"))
         }).to_request();
         let response = test::call_service(&app, request).await;
-        if !response.status().is_client_error() {
-            let formatted_response = format!("{response:?}");
-            let body = response.into_body();
-            panic!("Response did not indicate client failure: {formatted_response}{body:?}")
-        }
+        assert_client_error(response, "Response did not indicate client failure");
     }
 
     #[actix_web::test]
