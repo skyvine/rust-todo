@@ -730,6 +730,11 @@ mod tests {
         }
     }
 
+    fn extract_shares(response: ServiceResponse) -> Vec<serde_json::Value> {
+        let body: serde_json::Value = serde_json::from_slice(&response.into_body().try_into_bytes().unwrap()).unwrap();
+        body["shares"].as_array().expect("shares should be an array").clone()
+    }
+
     fn extract_json_tasks(response: ServiceResponse) -> Vec<Task> {
         extract_json_from_constructor(response, "tasks", |v|
             match v.as_array() {
@@ -1131,8 +1136,7 @@ mod tests {
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
 
         let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
-        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
-        let shares = body["shares"].as_array().expect("shares should be an array");
+        let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1);
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read");
@@ -1156,8 +1160,7 @@ mod tests {
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Re-share request failed");
 
         let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
-        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
-        let shares = body["shares"].as_array().expect("shares should be an array");
+        let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1, "Re-sharing should replace, not duplicate");
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
     }
@@ -1201,8 +1204,7 @@ mod tests {
         assert_response_success(unshare_task(&app, &owner_key, task_id, grantee_username).await, "Unshare request failed");
 
         let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
-        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
-        let shares = body["shares"].as_array().expect("shares should be an array");
+        let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 0, "Share row should have been removed");
     }
 
@@ -1395,8 +1397,7 @@ mod tests {
 
         // The failed share call must not have created any share row.
         let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
-        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
-        let shares = body["shares"].as_array().expect("shares should be an array");
+        let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1, "Failed share call must not create a new share");
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
 
@@ -1405,8 +1406,7 @@ mod tests {
 
         // The failed unshare call must not have removed the existing share.
         let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
-        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
-        let shares = body["shares"].as_array().expect("shares should be an array");
+        let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1, "Failed unshare call must not remove the existing share");
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
