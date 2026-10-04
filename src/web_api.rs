@@ -704,6 +704,15 @@ mod tests {
         test::call_service(&app, request).await
     }
 
+    async fn add_task(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, title: &str, description: Option<&str>) -> ServiceResponse {
+        let request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: String::from(auth_key),
+            title: String::from(title),
+            description: description.map(String::from),
+        }).to_request();
+        test::call_service(app, request).await
+    }
+
     fn extract_json_from_constructor<Constructor, Output>(response: ServiceResponse, key: &str, constructor: Constructor) -> Output
         where Constructor: FnOnce(&serde_json::Value) -> Output
     {
@@ -828,19 +837,13 @@ mod tests {
         let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
-        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key, title: String::from("test title"), description: Some(String::from("test description"))
-        }).to_request();
-        assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+        assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
     }
 
     #[actix_web::test]
     async fn cannot_add_task_without_valid_auth_key() {
         let app = test::init_service(build_app!()).await;
-        let request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: String::from("this-is-not-a-valid-auth-key"), title: String::from("test title"), description: Some(String::from("test description"))
-        }).to_request();
-        let response = test::call_service(&app, request).await;
+        let response = add_task(&app, "this-is-not-a-valid-auth-key", "test title", Some("test description")).await;
         assert_client_error(response, "Response did not indicate client failure");
     }
 
@@ -856,10 +859,7 @@ mod tests {
         let login_response = assert_response_success(login(&app, username.as_str(), password.as_str()).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
-        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("test title"), description: Some(String::from("test description"))
-        }).to_request();
-        let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+        let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
 
         let task_id = extract_json_i32(add_task_response, "task_id");
         let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
@@ -884,10 +884,7 @@ mod tests {
         let owner_login_response = assert_response_success(login(&app, owner_username, owner_password).await, "Could not login as owner.");
         let owner_auth_key = extract_json_string(owner_login_response, "auth_key");
 
-        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_auth_key.clone(), title: String::from("test title"), description: Some(String::from("test description"))
-        }).to_request();
-        let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+        let add_task_response = assert_response_success(add_task(&app, &owner_auth_key, "test title", Some("test description")).await, "Unable to add task.");
         let task_id = extract_json_i32(add_task_response, "task_id");
 
         let non_owner_login_response = assert_response_success(login(&app, non_owner_username, non_owner_password).await, "Could not login as non-owner.");
@@ -950,10 +947,7 @@ mod tests {
         let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
-        let add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("original title"), description: Some(String::from("original description"))
-        }).to_request();
-        let add_task_response = assert_response_success(test::call_service(&app, add_task_request).await, "Unable to add task.");
+        let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
         let task_id = extract_json_i32(add_task_response, "task_id");
 
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
@@ -1007,16 +1001,10 @@ mod tests {
         let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
-        let first_add = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("first task"), description: None
-        }).to_request();
-        let first_add_response = assert_response_success(test::call_service(&app, first_add).await, "Unable to add first task.");
+        let first_add_response = assert_response_success(add_task(&app, &auth_key, "first task", None).await, "Unable to add first task.");
         let first_task_id = extract_json_i32(first_add_response, "task_id");
 
-        let second_add = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("second task"), description: None
-        }).to_request();
-        let second_add_response = assert_response_success(test::call_service(&app, second_add).await, "Unable to add second task.");
+        let second_add_response = assert_response_success(add_task(&app, &auth_key, "second task", None).await, "Unable to add second task.");
         let second_task_id = extract_json_i32(second_add_response, "task_id");
 
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
@@ -1046,15 +1034,9 @@ mod tests {
         let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
-        let first_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("task 1"), description: None
-        }).to_request();
-        assert_response_success(test::call_service(&app, first_add_task_request).await, "Unable to add first task.");
+        assert_response_success(add_task(&app, &auth_key, "task 1", None).await, "Unable to add first task.");
 
-        let second_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("task 2"), description: None
-        }).to_request();
-        assert_response_success(test::call_service(&app, second_add_task_request).await, "Unable to add second task.");
+        assert_response_success(add_task(&app, &auth_key, "task 2", None).await, "Unable to add second task.");
 
         let get_tasks_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
             auth_key: auth_key.clone()
@@ -1082,15 +1064,9 @@ mod tests {
         let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
         let auth_key = extract_json_string(login_response, "auth_key");
 
-        let first_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("task 1"), description: None
-        }).to_request();
-        assert_response_success(test::call_service(&app, first_add_task_request).await, "Unable to add first task.");
+        assert_response_success(add_task(&app, &auth_key, "task 1", None).await, "Unable to add first task.");
 
-        let second_add_task_request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: auth_key.clone(), title: String::from("task 2"), description: None
-        }).to_request();
-        let second_add_task_response = assert_response_success(test::call_service(&app, second_add_task_request).await, "Unable to add second task.");
+        let second_add_task_response = assert_response_success(add_task(&app, &auth_key, "task 2", None).await, "Unable to add second task.");
         let second_task_id = extract_json_i32(second_add_task_response, "task_id");
 
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
@@ -1152,9 +1128,7 @@ mod tests {
         assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
 
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
@@ -1178,9 +1152,7 @@ mod tests {
         assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
 
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
@@ -1206,9 +1178,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let non_owner_key = extract_json_string(assert_response_success(login(&app, non_owner_username, password).await, "login non-owner"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_eq!(share_task(&app, &non_owner_key, task_id, non_owner_username, "read").await.status().as_u16(), 401);
@@ -1227,9 +1197,7 @@ mod tests {
         assert_response_success(register(&app, grantee_username, password).await, "register grantee");
 
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
@@ -1249,9 +1217,7 @@ mod tests {
 
         assert_response_success(register(&app, owner_username, password).await, "register owner");
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_eq!(share_task(&app, &owner_key, task_id, "no-such-user", "read").await.status().as_u16(), 404);
@@ -1271,9 +1237,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let other_key = extract_json_string(assert_response_success(login(&app, other_username, password).await, "login other"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         // Non-owner trying to manage an existing task
@@ -1307,9 +1271,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: Some(String::from("original description")),
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", Some("original description")).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
@@ -1348,9 +1310,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
@@ -1390,9 +1350,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let stranger_key = extract_json_string(assert_response_success(login(&app, stranger_username, password).await, "login stranger"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("private task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
@@ -1430,9 +1388,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
@@ -1474,9 +1430,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
@@ -1528,9 +1482,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
@@ -1566,9 +1518,7 @@ mod tests {
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
         let stranger_key = extract_json_string(assert_response_success(login(&app, stranger_username, password).await, "login stranger"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key, title: String::from("private task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
@@ -1596,9 +1546,7 @@ mod tests {
 
         let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
 
-        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: owner_key.clone(), title: String::from("owned task"), description: None,
-        }).to_request()).await, "add task");
+        let add_response = assert_response_success(add_task(&app, &owner_key, "owned task", None).await, "add task");
         let owned_task_id = extract_json_i32(add_response, "task_id");
 
         // Simulate a stale share row granting the owner access to their own
