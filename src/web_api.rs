@@ -28,37 +28,47 @@ use tracing::{event, span, Level};
 use uuid::Uuid;
 use zeroize::{ZeroizeOnDrop};
 
+/// The body shared by all error responses: the request id, plus an
+/// optional message for client errors.
+fn error_body(request_id: impl std::fmt::Display) -> String {
+    format!("{}", json!({"request_id": request_id.to_string()}))
+}
+
+fn error_body_with_message(request_id: impl std::fmt::Display, message: impl Serialize) -> String {
+    format!("{}", json!({"request_id": request_id.to_string(), "message": message}))
+}
+
 impl ApplicationError {
     fn into_http_response(self, request_id: &String) -> HttpResponse {
         match self {
             ApplicationError::DieselError(e) => {
                 event!(Level::ERROR, "Diesel error: {e}");
                 match e {
-                    diesel::result::Error::NotFound => HttpResponse::NotFound().body(format!("{}", json!({"request_id": request_id}))),
-                    _ => HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id}))),
+                    diesel::result::Error::NotFound => HttpResponse::NotFound().body(error_body(request_id)),
+                    _ => HttpResponse::InternalServerError().body(error_body(request_id)),
                 }
             },
             ApplicationError::InvalidAuthKey => {
                 event!(Level::ERROR, "Invalid auth key");
-                HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
+                HttpResponse::Unauthorized().body(error_body(request_id))
             }
             ApplicationError::InvalidData(message) => {
                 event!(Level::ERROR, "Invalid data: {message}");
-                HttpResponse::BadRequest().body(format!("{}", json!({"request_id": request_id, "message": message})))
+                HttpResponse::BadRequest().body(error_body_with_message(request_id, message))
             }
             ApplicationError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
-                HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
+                HttpResponse::Unauthorized().body(error_body(request_id))
             },
             ApplicationError::QueryFailed(e) => {
                 event!(Level::ERROR, "Query failed: {e}");
-                HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": request_id})))
+                HttpResponse::InternalServerError().body(error_body(request_id))
             },
             ApplicationError::Unauthorized => {
                 event!(Level::ERROR, "Unauthorized");
-                HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": request_id})))
+                HttpResponse::Unauthorized().body(error_body(request_id))
             }
-            ApplicationError::UserExists => HttpResponse::Conflict().body(format!("{}", json!({"request_id": request_id}))),
+            ApplicationError::UserExists => HttpResponse::Conflict().body(error_body(request_id)),
         }
     }
 }
@@ -84,7 +94,7 @@ pub async fn logout(payload: actix_web::web::Json<LogoutPayload>) -> impl Respon
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -115,7 +125,7 @@ pub async fn get_all_tasks(payload: actix_web::web::Json<GetAllTasksPayload>) ->
         }
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -144,7 +154,7 @@ pub async fn get_incomplete_tasks(payload: actix_web::web::Json<GetIncompleteTas
         }
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -184,7 +194,7 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
                 },
                 Ok(_) => {
                     event!(Level::ERROR, "Cannot get task {}: user {} has no task access", payload.id, user.ref_id());
-                    HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                    HttpResponse::Unauthorized().body(error_body(request_id))
                 },
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
@@ -192,7 +202,7 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot get task {}: not found", payload.id);
-                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                        HttpResponse::Unauthorized().body(error_body(request_id))
                     },
                     other => other.into_http_response(&format!("{request_id}")),
                 },
@@ -200,7 +210,7 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
         }
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -243,7 +253,7 @@ pub async fn get_user_by_id(payload: actix_web::web::Json<GetUserByIdPayload>) -
         }
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -270,7 +280,7 @@ pub async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Respon
             },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{}", request_id)})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -296,7 +306,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
         Ok(title) => title,
         Err(e) => {
             event!(Level::ERROR, "{e:?}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
+            return HttpResponse::BadRequest().body(error_body_with_message(request_id, e));
         }
     };
     let description = payload.description.take().map(TaskDescription::new);
@@ -316,7 +326,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -336,7 +346,7 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
         }
     };
 
@@ -353,7 +363,7 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
                 Ok(ph) => ph,
                 Err(e) => {
                     event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
-                    return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+                    return HttpResponse::InternalServerError().body(error_body(request_id));
                 }
             };
 
@@ -364,7 +374,7 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -391,7 +401,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+            return HttpResponse::BadRequest().body(error_body(request_id));
         }
     };
     let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
@@ -404,7 +414,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
         Ok(h) => h.to_string(),
         Err(e) => {
             event!(Level::ERROR, "Unable to hash password: {e:?}");
-            return HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})));
+            return HttpResponse::InternalServerError().body(error_body(request_id));
         }
     };
 
@@ -420,7 +430,7 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
 
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e}.");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -458,7 +468,7 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
     // optional field is set, this equals the default (all None).
     if payload.updates == TaskUpdates::default() {
         event!(Level::ERROR, "No fields provided to update");
-        return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": "At least one field must be provided"})));
+        return HttpResponse::BadRequest().body(error_body_with_message(request_id, "At least one field must be provided"));
     }
 
     let title = if let Some(title) = payload.updates.title.as_mut() {
@@ -466,7 +476,7 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
             Ok(title) => Some(title),
             Err(e) => {
                 event!(Level::ERROR, "{e:?}");
-                return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": e})));
+                return HttpResponse::BadRequest().body(error_body_with_message(request_id, e));
             }
         }
     } else {
@@ -483,14 +493,14 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
             };
 
             match crate::core::update_task(&caller, &payload.id, payload.updates.completed, title, description, &mut connection) {
-                Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
                     // task": both are the same 401 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
-                        HttpResponse::Unauthorized().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+                        HttpResponse::Unauthorized().body(error_body(request_id))
                     },
                     other => other.into_http_response(&format!("{request_id}")),
                 },
@@ -498,7 +508,7 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -524,7 +534,7 @@ pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> 
         Ok(p) => p,
         Err(e) => {
             event!(Level::ERROR, "Invalid permission: {e:?}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": "permission must be \"read\" or \"read_write\""})));
+            return HttpResponse::BadRequest().body(error_body_with_message(request_id, "permission must be \"read\" or \"read_write\""));
         }
     };
 
@@ -532,7 +542,7 @@ pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> 
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
         }
     };
 
@@ -544,7 +554,7 @@ pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> 
             };
 
             match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
-                Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
                 // Unauthorized covers both "task doesn't exist" and "not
                 // your task", so the 401 doesn't reveal which.
                 Err(e) => e.into_http_response(&format!("{request_id}")),
@@ -552,7 +562,7 @@ pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> 
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -574,7 +584,7 @@ pub async fn unshare_task(mut payload: actix_web::web::Json<UnshareTaskPayload>)
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(format!("{}", json!({"request_id": format!("{request_id}"), "message": message})));
+            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
         }
     };
 
@@ -586,13 +596,13 @@ pub async fn unshare_task(mut payload: actix_web::web::Json<UnshareTaskPayload>)
             };
 
             match remove_share(&owner, &payload.id, &target, &mut connection) {
-                Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
+                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
@@ -628,7 +638,7 @@ pub async fn get_task_shares(payload: actix_web::web::Json<GetTaskSharesPayload>
         },
         Err(e) => {
             event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
-            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+            HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
