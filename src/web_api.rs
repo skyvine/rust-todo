@@ -444,12 +444,12 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
 
     match establish_connection() {
         Ok(mut connection) => {
-            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let caller = match auth_key_to_user(&payload.auth_key, &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::update_task(&owner, &payload.id, payload.updates.completed, title, description, &mut connection) {
+            match crate::core::update_task(&caller, &payload.id, payload.updates.completed, title, description, &mut connection) {
                 Ok(()) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}")}))),
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
@@ -1263,6 +1263,173 @@ mod tests {
         let missing_unshare = unshare_task(&app, &owner_key, -1, other_username).await;
         assert_eq!(not_owned_unshare.status().as_u16(), 401);
         assert_eq!(missing_unshare.status().as_u16(), 401);
+    }
+
+    #[actix_web::test]
+    async fn read_write_sharee_can_update_task_fields() {
+        let owner_username = "rw-update-owner-username";
+        let grantee_username = "rw-update-grantee-username";
+        let password = "rw-update-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: Some(String::from("original description")),
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
+
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
+            id: task_id,
+            auth_key: grantee_key.clone(),
+            updates: super::TaskUpdates {
+                completed: Some(true),
+                title: Some(String::from("updated by grantee")),
+                description: Some(String::from("updated description")),
+            },
+        }).to_request();
+        assert_response_success(test::call_service(&app, update_request).await, "read_write grantee should be able to update the task");
+
+        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: owner_key, id: task_id,
+        }).to_request();
+        let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
+        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        assert!(*task.completed());
+        assert_eq!(*task.title(), "updated by grantee");
+        assert_eq!(task.description().as_ref().unwrap(), "updated description");
+    }
+
+    #[actix_web::test]
+    async fn read_only_sharee_cannot_update_task() {
+        let owner_username = "ro-update-owner-username";
+        let grantee_username = "ro-update-grantee-username";
+        let password = "ro-update-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
+            id: task_id,
+            auth_key: grantee_key,
+            updates: super::TaskUpdates {
+                completed: Some(true),
+                title: None,
+                description: None,
+            },
+        }).to_request();
+        let update_response = test::call_service(&app, update_request).await;
+        assert_eq!(update_response.status().as_u16(), 401, "read-only sharee must not update the task");
+
+        // The task itself must be unchanged.
+        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: owner_key, id: task_id,
+        }).to_request();
+        let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
+        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        assert!(!task.completed(), "read-only sharee's update must not have been applied");
+        assert_eq!(*task.title(), "shared task");
+    }
+
+    #[actix_web::test]
+    async fn unrelated_user_cannot_update_task() {
+        let owner_username = "unrelated-update-owner-username";
+        let stranger_username = "unrelated-update-stranger-username";
+        let password = "unrelated-update-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, stranger_username, password).await, "register stranger");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let stranger_key = extract_json_string(assert_response_success(login(&app, stranger_username, password).await, "login stranger"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("private task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
+            id: task_id,
+            auth_key: stranger_key,
+            updates: super::TaskUpdates {
+                completed: Some(true),
+                title: None,
+                description: None,
+            },
+        }).to_request();
+        let update_response = test::call_service(&app, update_request).await;
+        assert_eq!(update_response.status().as_u16(), 401, "Unrelated user must not update the task");
+
+        // The task itself must be unchanged.
+        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
+            auth_key: owner_key, id: task_id,
+        }).to_request();
+        let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
+        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        assert!(!task.completed(), "Unrelated user's update must not have been applied");
+        assert_eq!(*task.title(), "private task");
+    }
+
+    #[actix_web::test]
+    async fn read_write_sharee_cannot_manage_shares() {
+        let owner_username = "rw-manage-owner-username";
+        let grantee_username = "rw-manage-grantee-username";
+        let password = "rw-manage-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, owner_username, password).await, "register owner");
+        assert_response_success(register(&app, grantee_username, password).await, "register grantee");
+
+        let owner_key = extract_json_string(assert_response_success(login(&app, owner_username, password).await, "login owner"), "auth_key");
+        let grantee_key = extract_json_string(assert_response_success(login(&app, grantee_username, password).await, "login grantee"), "auth_key");
+
+        let add_response = assert_response_success(test::call_service(&app, test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
+            auth_key: owner_key.clone(), title: String::from("shared task"), description: None,
+        }).to_request()).await, "add task");
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
+
+        let failed_share = share_task(&app, &grantee_key, task_id, owner_username, "read_write").await;
+        assert_eq!(failed_share.status().as_u16(), 401);
+
+        // The failed share call must not have created any share row.
+        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let shares = body["shares"].as_array().expect("shares should be an array");
+        assert_eq!(shares.len(), 1, "Failed share call must not create a new share");
+        assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
+
+        let failed_unshare = unshare_task(&app, &grantee_key, task_id, grantee_username).await;
+        assert_eq!(failed_unshare.status().as_u16(), 401);
+
+        // The failed unshare call must not have removed the existing share.
+        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let shares = body["shares"].as_array().expect("shares should be an array");
+        assert_eq!(shares.len(), 1, "Failed unshare call must not remove the existing share");
+        assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
+        assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
+
+        assert_eq!(get_task_shares(&app, &grantee_key, task_id).await.status().as_u16(), 401);
     }
 
     #[actix_web::test]

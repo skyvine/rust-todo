@@ -491,14 +491,19 @@ pub fn logout(auth_key: &String, connection: &mut PgConnection) -> Result<(), Ap
 
 }
 
-pub fn update_task(owner: &User, task_id: &i32, completed: Option<bool>, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn update_task(caller: &User, task_id: &i32, completed: Option<bool>, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 
-    // Only the owner may update the task. Shared (read or read-write)
-    // users are not owners, so they still get Unauthorized here.
-    match get_task_permission(owner, task_id, connection) {
-        Ok(Permission::Owner) => (),
+    // Owners and read-write share holders may update the task. Read-only
+    // and unrelated users may not. A missing task and a task the caller
+    // can't write both produce Unauthorized, so we don't leak which task
+    // IDs exist.
+    match get_task_permission(caller, task_id, connection) {
+        Ok(Permission::Owner) | Ok(Permission::ReadWrite) => (),
         Ok(_) => return Err(ApplicationError::Unauthorized),
+        Err(ApplicationError::DieselError(diesel::result::Error::NotFound)) => {
+            return Err(ApplicationError::Unauthorized)
+        },
         Err(e) => return Err(e),
     }
 
