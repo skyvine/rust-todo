@@ -11,16 +11,37 @@ include a request_id key which uniquely identifies the request.
 - /logout: Disable an auth key
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
+- /unshare_task: Remove a user's access to a task owned by the caller
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the task to change.
+    - username [string]: The username of the user whose access should be removed.
 
 ### GET
 
+- /all_tasks: Retrieve all tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+  - Output keys:
+    - tasks [array]: Tasks owned by the caller plus tasks shared with them.
+- /incomplete_tasks: Retrieve all incomplete tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+  - Output keys:
+    - tasks [array]: Incomplete tasks owned by the caller plus tasks shared with them.
 - /is_alive: unconditionally returns an Ok status
-- /task_by_id: Retrieve the contents of a task based on its ID
+- /task_by_id: Retrieve the contents of a task based on its ID. Shared access (read or read-write) is honored.
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to retrieve.
   - Output keys:
     - task [object]: An object that can be deserialized by `Task::from_json_object`.
+- /task_shares: List the shares on a task owned by the caller
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the task whose shares to list.
+  - Output keys:
+    - shares [array]: Each item has `username` [string] and `permission` [string] ("read" or "read_write").
 - /whoami: Retrieves the username of the currently logged in user
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
@@ -45,13 +66,19 @@ include a request_id key which uniquely identifies the request.
     - description \[string] (optional): A description of the task (could be long)
   - Output keys:
     - id [number]: A unique identifier for the task.
-- /task_by_id: Changes some or all of the data contained in a task.
+- /task_by_id: Changes some or all of the data contained in a task. Read-write shared access is honored: a user with a `read_write` share may update the task.
   - Input keys:
     - auth_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to change.
     - completed \[bool] (optional): The new completed status of the task.
     - title \[string] (optional): The new title of the task.
     - description \[string] (optional): The new description of the task.
+- /share_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the task to share.
+    - username [string]: The username of the user to share with.
+    - permission [string]: Either "read" or "read_write".
 
 ## Directory Map
 - .github/workflows/main.yml:

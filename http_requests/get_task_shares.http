@@ -1,0 +1,10 @@
+GET /task_shares HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Content-Type: application/json; charset=utf-8
+Content-Length: 45
+
+{
+	"auth_key": "manual-auth-key",
+	"id": 1
+}
