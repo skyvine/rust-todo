@@ -47,6 +47,13 @@ include a request_id key which uniquely identifies the request.
     - auth_key [string]: An auth key as returned by the login endpoint.
   - Output keys:
     - username [string]: The name of the user associated with the auth_key
+- /user_by_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
+  - Input keys:
+    - auth_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the user to resolve.
+  - Output keys:
+    - username [string]: The username of the user with the given id.
+    - An unknown id returns 404.
 ### POST
 
 - /register_account: Creates a new account for future use.

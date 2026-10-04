@@ -216,6 +216,39 @@ pub async fn is_alive() -> impl Responder {
 }
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct GetUserByIdPayload {
+    auth_key: String,
+    id: i32,
+}
+
+/// Resolves a user id (as exposed in `Task`'s `owner` field and in share
+/// responses) to that user's username. User ids are public, so an unknown
+/// id simply returns 404.
+#[get("/user_by_id")]
+pub async fn get_user_by_id(payload: actix_web::web::Json<GetUserByIdPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get User By ID", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let _user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match crate::core::get_user_by_id(&payload.id, &mut connection) {
+                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "username": user.ref_username()}))),
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            HttpResponse::InternalServerError().body(format!("{}", json!({"request_id": format!("{request_id}")})))
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct WhoAmIPayload {
     auth_key: String
 }
@@ -1595,5 +1628,51 @@ mod tests {
                 None => panic!("not an array"),
             });
         assert_eq!(tasks.len(), 1, "Owner's task should appear exactly once even with a stale share row");
+    }
+
+    #[actix_web::test]
+    async fn user_by_id_returns_username_for_existing_user() {
+        let username = "user-by-id-existing-username";
+        let password = "user-by-id-existing-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        // Look up the user's id directly (usernames are the public handle;
+        // task/share payloads carry the id).
+        let user_id = {
+            let mut connection = super::establish_connection().expect("db connection");
+            let un = crate::domain_types::Username::new(String::from(username)).unwrap();
+            let user = crate::core::get_user_by_name(&un, &mut connection).unwrap();
+            *user.ref_id()
+        };
+
+        let request = test::TestRequest::get().uri("/user_by_id").set_json(super::GetUserByIdPayload {
+            auth_key,
+            id: user_id,
+        }).to_request();
+        let response = assert_response_success(test::call_service(&app, request).await, "User by id lookup failed.");
+        let response_name = extract_json_string(response, "username");
+        assert_eq!(username, response_name);
+    }
+
+    #[actix_web::test]
+    async fn user_by_id_returns_404_for_unknown_id() {
+        let username = "user-by-id-unknown-username";
+        let password = "user-by-id-unknown-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(register(&app, username, password).await, "Unable to register account");
+        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let request = test::TestRequest::get().uri("/user_by_id").set_json(super::GetUserByIdPayload {
+            auth_key,
+            id: -1,
+        }).to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status().as_u16(), 404, "Unknown user id should return 404.");
     }
 }

@@ -454,6 +454,29 @@ pub fn get_task_by_id(task_id: &i32, connection: &mut PgConnection) -> Result<Ta
     }
 }
 
+pub fn get_user_by_id(user_id: &i32, connection: &mut PgConnection) -> Result<User, ApplicationError> {
+    use crate::schema::users::dsl::*;
+
+    let query = users
+        .filter(id.eq(user_id))
+        .select(User::as_select());
+    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+
+    match query.load::<User>(connection) {
+        Ok(found_users) => {
+            if !found_users.is_empty() {
+                Ok(found_users.into_iter().next().unwrap())
+            } else {
+                Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+            }
+        },
+        Err(e) => {
+            event!(Level::ERROR, "Query failed while getting user by id: {e}");
+            Err(ApplicationError::DieselError(e))
+        }
+    }
+}
+
 pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<User, ApplicationError> {
     use crate::schema::users::dsl::*;
 

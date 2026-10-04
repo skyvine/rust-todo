@@ -52,6 +52,14 @@ ticket's straightforward version returns the username for any existing id.
 Discuss/decide before implementing; if restricted, update the acceptance
 criteria accordingly.
 
+## Decision log
+
+- 2026-10-04: The original "unknown id returns 401" requirement was revised.
+  Returning 401 for a missing id would actually leak which keys exist, since
+  an existing id always yields a username. User ids are considered public, so
+  `GET /user_by_id` now returns 404 for an unknown id instead. The endpoint
+  implementation, tests, and README have been updated to match.
+
 ## Acceptance criteria
 
 - `GET /user_by_id` returns the correct username for an existing user id and a
