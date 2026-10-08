@@ -1,0 +1,27 @@
+name: Semgrep
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["trunk"]
+
+jobs:
+  semgrep:
+    name: semgrep_scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run Semgrep
+        run: |
+          cp $GITHUB_EVENT_PATH ./.github_event_path.json
+          printenv | sort | egrep "^GITHUB_" | tee .env
+          printenv | sort | egrep "^RUNNER_" | tee -a .env
+          sudo chown -R 1000:1000 .
+          docker run --rm -v "${PWD}:/src" \
+            --env-file .env \
+            -e SEMGREP_APP_TOKEN=${{ secrets.SEMGREP_APP_TOKEN }} \
+            -e GITHUB_EVENT_PATH="/src/.github_event_path.json" \
+            semgrep/semgrep:latest-nonroot \
+            semgrep ci
+
+
