@@ -15,7 +15,7 @@ jobs:
 
       - name: Install go
         run: |
-          apt install go
+          sudo apt install go
 
       - name: Install Betterleaks
         run: |
