@@ -88,8 +88,8 @@ include a request_id key which uniquely identifies the request.
     - permission [string]: Either "read" or "read_write".
 
 ## Directory Map
-- .github/workflows/main.yml:
-    - CI tests
+- .github/workflows/*:
+    - CI integrations
 - http_requests/*:
     - Raw HTTP requests useful for manually testing features against a running server
 - migrations/*:
