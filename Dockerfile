@@ -14,6 +14,10 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim AS runner
 RUN apt-get update && apt-get install -y curl libpq5 xz-utils
+# Create an unprivileged user to run the server as
+# The home directory is needed for diesel.
+RUN useradd rust-todo-runner --create-home
+USER rust-todo-runner
 RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/diesel-rs/diesel/releases/latest/download/diesel_cli-installer.sh | sh
 WORKDIR /app
 COPY --from=builder /app/target/release/rust-todo /app/rust-todo
