@@ -23,4 +23,4 @@ jobs:
 
       - name: Run Betterleaks
         run: |
-          ~/go/bin/betterleaks --no-banner filesystem .
+          ~/go/bin/betterleaks --no-banner git .
