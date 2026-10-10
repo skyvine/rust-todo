@@ -43,9 +43,4 @@ diesel::joinable!(task_shares -> tasks (task_id));
 diesel::joinable!(task_shares -> users (user_id));
 diesel::joinable!(tasks -> users (owner));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    auth_keys,
-    task_shares,
-    tasks,
-    users,
-);
+diesel::allow_tables_to_appear_in_same_query!(auth_keys, task_shares, tasks, users,);

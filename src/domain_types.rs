@@ -69,7 +69,9 @@ pub(crate) struct Username(String);
 impl Username {
     pub fn new(username: String) -> Result<Self, String> {
         if username.trim().is_empty() {
-            Err(String::from("Username is empty or contains only whitespace."))
+            Err(String::from(
+                "Username is empty or contains only whitespace.",
+            ))
         } else {
             Ok(Self(username))
         }

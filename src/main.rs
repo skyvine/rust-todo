@@ -1,6 +1,6 @@
 use clap::Parser;
 use rust_todo::run;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -17,7 +17,10 @@ struct Arguments {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let arguments = Arguments::parse();
-    fmt().json().with_env_filter(EnvFilter::from_default_env()).init();
+    fmt()
+        .json()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
     println!("Running on {}:{}", arguments.ip_address, arguments.port);
     run(arguments.ip_address, arguments.port).await
 }

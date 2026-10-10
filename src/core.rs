@@ -1,12 +1,9 @@
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
-use argon2::{
-    password_hash::PasswordVerifier,
-    Argon2
-};
+use argon2::{Argon2, password_hash::PasswordVerifier};
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::env;
-use tracing::{event, Level};
+use tracing::{Level, event};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -27,9 +24,9 @@ pub enum ApplicationError {
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct AuthKey {
-    id:      i32,
+    id: i32,
     user_id: i32,
-    key:     String
+    key: String,
 }
 
 /// A complete entry from the tasks table in the database
@@ -39,11 +36,11 @@ pub struct AuthKey {
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Task {
-    id:          i32,
-    owner:       i32,
-    title:       String,
+    id: i32,
+    owner: i32,
+    title: String,
     description: Option<String>,
-    completed:   bool,
+    completed: bool,
 }
 
 #[allow(dead_code)]
@@ -52,22 +49,42 @@ impl Task {
     pub fn from_json_object(object: &serde_json::Value) -> Result<Self, ApplicationError> {
         let id = match object["id"].as_i64() {
             Some(number) => number,
-            None => return Err(ApplicationError::InvalidData(format!("{} should be a number", object["id"]))),
+            None => {
+                return Err(ApplicationError::InvalidData(format!(
+                    "{} should be a number",
+                    object["id"]
+                )));
+            }
         } as i32;
 
         let owner = match object["owner"].as_i64() {
             Some(number) => number,
-            None => return Err(ApplicationError::InvalidData(format!("{} should be a number", object["owner"]))),
+            None => {
+                return Err(ApplicationError::InvalidData(format!(
+                    "{} should be a number",
+                    object["owner"]
+                )));
+            }
         } as i32;
 
         let completed = match object["completed"].as_bool() {
             Some(b) => b,
-            None => return Err(ApplicationError::InvalidData(format!("{} should be a bool", object["completed"]))),
+            None => {
+                return Err(ApplicationError::InvalidData(format!(
+                    "{} should be a bool",
+                    object["completed"]
+                )));
+            }
         };
 
         let title = String::from(match object["title"].as_str() {
             Some(s) => s,
-            None => return Err(ApplicationError::InvalidData(format!("{} should be a string", object["title"])))
+            None => {
+                return Err(ApplicationError::InvalidData(format!(
+                    "{} should be a string",
+                    object["title"]
+                )));
+            }
         });
 
         let description = match object["description"].as_str() {
@@ -76,7 +93,10 @@ impl Task {
                 if object["description"].is_null() {
                     None
                 } else {
-                    return Err(ApplicationError::InvalidData(format!("{} should be a string", object["description"])))
+                    return Err(ApplicationError::InvalidData(format!(
+                        "{} should be a string",
+                        object["description"]
+                    )));
                 }
             }
         };
@@ -117,13 +137,23 @@ impl Task {
 #[diesel(table_name = crate::schema::tasks)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct TaskUpdate {
-    completed:   Option<bool>,
-    title:       Option<String>,
+    completed: Option<bool>,
+    title: Option<String>,
     description: Option<String>,
 }
 
 /// The level of access granted by a task share, stored as text in `task_shares.permission`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, diesel::expression::AsExpression, diesel::deserialize::FromSqlRow)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    diesel::expression::AsExpression,
+    diesel::deserialize::FromSqlRow,
+)]
 #[diesel(sql_type = diesel::sql_types::Text)]
 pub enum SharePermission {
     Read,
@@ -136,7 +166,9 @@ impl SharePermission {
         match text {
             "read" => Ok(SharePermission::Read),
             "read_write" => Ok(SharePermission::ReadWrite),
-            other => Err(ApplicationError::InvalidData(format!("Unknown share permission: {other}"))),
+            other => Err(ApplicationError::InvalidData(format!(
+                "Unknown share permission: {other}"
+            ))),
         }
     }
 
@@ -151,7 +183,10 @@ impl SharePermission {
 
 impl diesel::deserialize::FromSql<diesel::sql_types::Text, diesel::pg::Pg> for SharePermission {
     fn from_sql(bytes: diesel::pg::PgValue<'_>) -> diesel::deserialize::Result<Self> {
-        let text = <String as diesel::deserialize::FromSql<diesel::sql_types::Text, diesel::pg::Pg>>::from_sql(bytes)?;
+        let text = <String as diesel::deserialize::FromSql<
+            diesel::sql_types::Text,
+            diesel::pg::Pg,
+        >>::from_sql(bytes)?;
         SharePermission::from_stored_text(&text).map_err(|e| match e {
             ApplicationError::InvalidData(msg) => msg.into(),
             other => format!("{other:?}").into(),
@@ -160,7 +195,10 @@ impl diesel::deserialize::FromSql<diesel::sql_types::Text, diesel::pg::Pg> for S
 }
 
 impl diesel::serialize::ToSql<diesel::sql_types::Text, diesel::pg::Pg> for SharePermission {
-    fn to_sql<'b>(&'b self, out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>) -> diesel::serialize::Result {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>,
+    ) -> diesel::serialize::Result {
         use std::io::Write;
         out.write_all(self.as_stored_text().as_bytes())?;
         Ok(diesel::serialize::IsNull::No)
@@ -175,9 +213,9 @@ impl diesel::serialize::ToSql<diesel::sql_types::Text, diesel::pg::Pg> for Share
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct TaskShare {
-    id:         i32,
-    task_id:    i32,
-    user_id:    i32,
+    id: i32,
+    task_id: i32,
+    user_id: i32,
     permission: SharePermission,
 }
 
@@ -242,7 +280,11 @@ pub enum Permission {
 ///
 /// Returns `ApplicationError::DieselError(NotFound)` if the task does not
 /// exist, so callers can keep hiding task existence behind a uniform 401.
-pub fn get_task_permission(user: &User, task_id: &i32, connection: &mut PgConnection) -> Result<Permission, ApplicationError> {
+pub fn get_task_permission(
+    user: &User,
+    task_id: &i32,
+    connection: &mut PgConnection,
+) -> Result<Permission, ApplicationError> {
     let task = get_task_by_id(task_id, connection)?;
 
     if task.owner_id() == user.ref_id() {
@@ -256,42 +298,57 @@ pub fn get_task_permission(user: &User, task_id: &i32, connection: &mut PgConnec
         .filter(dsl::user_id.eq(user.ref_id()))
         .select(TaskShare::as_select());
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<TaskShare>(connection) {
-        Ok(rows) => {
-            match rows.into_iter().next() {
-                Some(share) => match share.permission() {
-                    SharePermission::Read => Ok(Permission::ReadOnly),
-                    SharePermission::ReadWrite => Ok(Permission::ReadWrite),
-                },
-                None => Ok(Permission::None),
-            }
+        Ok(rows) => match rows.into_iter().next() {
+            Some(share) => match share.permission() {
+                SharePermission::Read => Ok(Permission::ReadOnly),
+                SharePermission::ReadWrite => Ok(Permission::ReadWrite),
+            },
+            None => Ok(Permission::None),
         },
         Err(e) => {
-            event!(Level::ERROR, "Query failed while looking up task share: {e}");
+            event!(
+                Level::ERROR,
+                "Query failed while looking up task share: {e}"
+            );
             Err(ApplicationError::DieselError(e))
         }
     }
 }
 
-pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: Option<&TaskDescription>, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
+pub fn add_task(
+    owner: &User,
+    title: &TaskTitle,
+    completed: bool,
+    description: Option<&TaskDescription>,
+    connection: &mut PgConnection,
+) -> Result<Task, ApplicationError> {
     use crate::schema::tasks::dsl;
 
-    let query =
-        diesel::insert_into(dsl::tasks).values((dsl::owner.eq(owner.ref_id()),
-                                                                dsl::title.eq(title.as_ref()),
-                                                                dsl::description.eq(description.map(AsRef::as_ref)),
-                                                                dsl::completed.eq(completed),
-                                                            ));
+    let query = diesel::insert_into(dsl::tasks).values((
+        dsl::owner.eq(owner.ref_id()),
+        dsl::title.eq(title.as_ref()),
+        dsl::description.eq(description.map(AsRef::as_ref)),
+        dsl::completed.eq(completed),
+    ));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.get_result(connection) {
         Ok(task) => {
             event!(Level::TRACE, "Query succeeded");
             Ok(task)
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -299,23 +356,34 @@ pub fn add_task(owner: &User, title: &TaskTitle, completed: bool, description: O
     }
 }
 
-pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn add_user(
+    un: &Username,
+    hashed_password: &String,
+    connection: &mut PgConnection,
+) -> Result<(), ApplicationError> {
     use crate::schema::users::dsl::*;
 
     let query =
         diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.execute(connection) {
         Ok(_) => {
             event!(Level::TRACE, "Query succeeded");
             Ok(())
-        },
-        Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation, _)) => {
+        }
+        Err(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => {
             event!(Level::ERROR, "Unable to add user: username already exists");
             Err(ApplicationError::UserExists)
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -323,16 +391,24 @@ pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConn
     }
 }
 
-pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, ApplicationError> {
+pub fn auth_key_to_user(
+    auth_key: &String,
+    connection: &mut PgConnection,
+) -> Result<User, ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
     use crate::schema::users::dsl::*;
 
-    let query = auth_keys.inner_join(users)
+    let query = auth_keys
+        .inner_join(users)
         .filter(key.eq(auth_key))
         .filter(expiration.gt(diesel::dsl::now))
-        .select(( AuthKey::as_select(), User::as_select()));
+        .select((AuthKey::as_select(), User::as_select()));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<(AuthKey, User)>(connection) {
         Ok(results) => {
@@ -341,8 +417,8 @@ pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Res
             } else {
                 Ok(results[0].1.clone())
             }
-        },
-        Err(e) => Err(ApplicationError::DieselError(e))
+        }
+        Err(e) => Err(ApplicationError::DieselError(e)),
     }
 }
 
@@ -354,7 +430,7 @@ pub fn establish_connection() -> Result<PgConnection, ConnectionError> {
         Err(_) => {
             let msg = String::from("DATABASE_URL is not set, unable to establish connection");
             event!(Level::ERROR, msg);
-            return Err(ConnectionError::InvalidConnectionUrl(msg))
+            return Err(ConnectionError::InvalidConnectionUrl(msg));
         }
     };
 
@@ -363,9 +439,12 @@ pub fn establish_connection() -> Result<PgConnection, ConnectionError> {
     connection
 }
 
-pub fn get_all_tasks_for_user(user: &User, connection: &mut PgConnection) -> Result<Vec<Task>, ApplicationError> {
-    use crate::schema::tasks::dsl as task_dsl;
+pub fn get_all_tasks_for_user(
+    user: &User,
+    connection: &mut PgConnection,
+) -> Result<Vec<Task>, ApplicationError> {
     use crate::schema::task_shares::dsl as share_dsl;
+    use crate::schema::tasks::dsl as task_dsl;
 
     // Tasks shared with the user, by id, as a subquery.
     let shared_task_ids = share_dsl::task_shares
@@ -373,10 +452,18 @@ pub fn get_all_tasks_for_user(user: &User, connection: &mut PgConnection) -> Res
         .select(share_dsl::task_id);
 
     let query = task_dsl::tasks
-        .filter(task_dsl::owner.eq(user.ref_id()).or(task_dsl::id.eq_any(shared_task_ids)))
+        .filter(
+            task_dsl::owner
+                .eq(user.ref_id())
+                .or(task_dsl::id.eq_any(shared_task_ids)),
+        )
         .select(Task::as_select());
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<Task>(connection) {
         Ok(found_tasks) => Ok(found_tasks),
@@ -384,9 +471,12 @@ pub fn get_all_tasks_for_user(user: &User, connection: &mut PgConnection) -> Res
     }
 }
 
-pub fn get_incomplete_tasks_for_user(user: &User, connection: &mut PgConnection) -> Result<Vec<Task>, ApplicationError> {
-    use crate::schema::tasks::dsl as task_dsl;
+pub fn get_incomplete_tasks_for_user(
+    user: &User,
+    connection: &mut PgConnection,
+) -> Result<Vec<Task>, ApplicationError> {
     use crate::schema::task_shares::dsl as share_dsl;
+    use crate::schema::tasks::dsl as task_dsl;
 
     // Tasks shared with the user, by id, as a subquery.
     let shared_task_ids = share_dsl::task_shares
@@ -394,11 +484,19 @@ pub fn get_incomplete_tasks_for_user(user: &User, connection: &mut PgConnection)
         .select(share_dsl::task_id);
 
     let query = task_dsl::tasks
-        .filter(task_dsl::owner.eq(user.ref_id()).or(task_dsl::id.eq_any(shared_task_ids)))
+        .filter(
+            task_dsl::owner
+                .eq(user.ref_id())
+                .or(task_dsl::id.eq_any(shared_task_ids)),
+        )
         .filter(task_dsl::completed.eq(false))
         .select(Task::as_select());
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<Task>(connection) {
         Ok(found_tasks) => Ok(found_tasks),
@@ -406,7 +504,12 @@ pub fn get_incomplete_tasks_for_user(user: &User, connection: &mut PgConnection)
     }
 }
 
-pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_password: &argon2::PasswordHash, connection: &mut PgConnection) -> Result<Uuid, ApplicationError> {
+pub fn get_new_auth_key(
+    user: &User,
+    given_password: &CleartextPassword,
+    hashed_password: &argon2::PasswordHash,
+    connection: &mut PgConnection,
+) -> Result<Uuid, ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
 
     match Argon2::default().verify_password(given_password.as_ref().as_bytes(), hashed_password) {
@@ -414,7 +517,11 @@ pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_
             let new_key = Uuid::new_v4();
             let query = diesel::insert_into(auth_keys)
                 .values((user_id.eq(user.ref_id()), key.eq(format!("{new_key}"))));
-            event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+            event!(
+                Level::TRACE,
+                "Running query: {}",
+                diesel::debug_query::<diesel::pg::Pg, _>(&query)
+            );
 
             match query.execute(connection) {
                 Ok(_) => Ok(new_key),
@@ -422,29 +529,34 @@ pub fn get_new_auth_key(user: &User, given_password: &CleartextPassword, hashed_
                     event!(Level::ERROR, "Unable to insert new auth key: {e}");
                     Err(ApplicationError::DieselError(e))
                 }
-
             }
-        },
-        Err(_) => {
-            Err(ApplicationError::InvalidPassword)
         }
+        Err(_) => Err(ApplicationError::InvalidPassword),
     }
-
 }
 
-pub fn get_task_by_id(task_id: &i32, connection: &mut PgConnection) -> Result<Task, ApplicationError> {
+pub fn get_task_by_id(
+    task_id: &i32,
+    connection: &mut PgConnection,
+) -> Result<Task, ApplicationError> {
     use crate::schema::tasks::dsl::*;
 
     let query = tasks.filter(id.eq(task_id)).select(Task::as_select());
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<Task>(connection) {
         Ok(found_tasks) => {
             if !(found_tasks.is_empty()) {
                 Ok(found_tasks.into_iter().next().unwrap())
             } else {
-                Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+                Err(ApplicationError::DieselError(
+                    diesel::result::Error::NotFound,
+                ))
             }
         }
         Err(e) => {
@@ -454,22 +566,29 @@ pub fn get_task_by_id(task_id: &i32, connection: &mut PgConnection) -> Result<Ta
     }
 }
 
-pub fn get_user_by_id(user_id: &i32, connection: &mut PgConnection) -> Result<User, ApplicationError> {
+pub fn get_user_by_id(
+    user_id: &i32,
+    connection: &mut PgConnection,
+) -> Result<User, ApplicationError> {
     use crate::schema::users::dsl::*;
 
-    let query = users
-        .filter(id.eq(user_id))
-        .select(User::as_select());
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    let query = users.filter(id.eq(user_id)).select(User::as_select());
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<User>(connection) {
         Ok(found_users) => {
             if !found_users.is_empty() {
                 Ok(found_users.into_iter().next().unwrap())
             } else {
-                Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+                Err(ApplicationError::DieselError(
+                    diesel::result::Error::NotFound,
+                ))
             }
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query failed while getting user by id: {e}");
             Err(ApplicationError::DieselError(e))
@@ -477,22 +596,31 @@ pub fn get_user_by_id(user_id: &i32, connection: &mut PgConnection) -> Result<Us
     }
 }
 
-pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<User, ApplicationError> {
+pub fn get_user_by_name(
+    un: &Username,
+    connection: &mut PgConnection,
+) -> Result<User, ApplicationError> {
     use crate::schema::users::dsl::*;
 
     let query = users
         .filter(username.eq(un.as_ref()))
         .select(User::as_select());
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<User>(connection) {
         Ok(found_users) => {
             if !found_users.is_empty() {
                 Ok(found_users.into_iter().next().unwrap())
             } else {
-                Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
+                Err(ApplicationError::DieselError(
+                    diesel::result::Error::NotFound,
+                ))
             }
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query failed while getting user by name: {e}");
             Err(ApplicationError::DieselError(e))
@@ -505,16 +633,26 @@ pub fn logout(auth_key: &String, connection: &mut PgConnection) -> Result<(), Ap
 
     let query = diesel::delete(auth_keys.filter(key.eq(auth_key)));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.execute(connection) {
         Ok(_) => Ok(()),
         Err(e) => Err(ApplicationError::DieselError(e)),
     }
-
 }
 
-pub fn update_task(caller: &User, task_id: &i32, completed: Option<bool>, title: Option<TaskTitle>, description: Option<TaskDescription>, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn update_task(
+    caller: &User,
+    task_id: &i32,
+    completed: Option<bool>,
+    title: Option<TaskTitle>,
+    description: Option<TaskDescription>,
+    connection: &mut PgConnection,
+) -> Result<(), ApplicationError> {
     use crate::schema::tasks::dsl;
 
     // Owners and read-write share holders may update the task. Read-only
@@ -525,8 +663,8 @@ pub fn update_task(caller: &User, task_id: &i32, completed: Option<bool>, title:
         Ok(Permission::Owner) | Ok(Permission::ReadWrite) => (),
         Ok(_) => return Err(ApplicationError::Unauthorized),
         Err(ApplicationError::DieselError(diesel::result::Error::NotFound)) => {
-            return Err(ApplicationError::Unauthorized)
-        },
+            return Err(ApplicationError::Unauthorized);
+        }
         Err(e) => return Err(e),
     }
 
@@ -536,16 +674,19 @@ pub fn update_task(caller: &User, task_id: &i32, completed: Option<bool>, title:
         description: description.map(|d| d.into()),
     };
 
-    let update_query =
-        diesel::update(dsl::tasks.filter(dsl::id.eq(task_id))).set(changeset);
+    let update_query = diesel::update(dsl::tasks.filter(dsl::id.eq(task_id))).set(changeset);
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&update_query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&update_query)
+    );
 
     match update_query.execute(connection) {
         Ok(_) => {
             event!(Level::TRACE, "Query succeeded");
             Ok(())
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -556,7 +697,11 @@ pub fn update_task(caller: &User, task_id: &i32, completed: Option<bool>, title:
 /// Verify that `owner` owns the task `task_id`, without revealing whether
 /// the task exists. Both a missing task and a task owned by someone else
 /// produce `ApplicationError::Unauthorized`.
-fn require_task_owner(owner: &User, task_id: &i32, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+fn require_task_owner(
+    owner: &User,
+    task_id: &i32,
+    connection: &mut PgConnection,
+) -> Result<(), ApplicationError> {
     match get_task_by_id(task_id, connection) {
         Ok(task) => {
             if task.owner_id() == owner.ref_id() {
@@ -564,17 +709,23 @@ fn require_task_owner(owner: &User, task_id: &i32, connection: &mut PgConnection
             } else {
                 Err(ApplicationError::Unauthorized)
             }
-        },
+        }
         Err(ApplicationError::DieselError(diesel::result::Error::NotFound)) => {
             Err(ApplicationError::Unauthorized)
-        },
+        }
         Err(e) => Err(e),
     }
 }
 
 /// Grant `target` access to the caller's task, or replace the existing
 /// permission if a share row already exists (upsert semantics).
-pub fn add_share_for_task(owner: &User, task_id: &i32, target: &Username, permission: SharePermission, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn add_share_for_task(
+    owner: &User,
+    task_id: &i32,
+    target: &Username,
+    permission: SharePermission,
+    connection: &mut PgConnection,
+) -> Result<(), ApplicationError> {
     require_task_owner(owner, task_id, connection)?;
 
     // Unknown target username: 404. That's acceptable because usernames
@@ -584,18 +735,26 @@ pub fn add_share_for_task(owner: &User, task_id: &i32, target: &Username, permis
     use crate::schema::task_shares::dsl::{self, task_shares};
 
     let query = diesel::insert_into(task_shares)
-        .values((dsl::task_id.eq(task_id), dsl::user_id.eq(target_user.ref_id()), dsl::permission.eq(permission)))
+        .values((
+            dsl::task_id.eq(task_id),
+            dsl::user_id.eq(target_user.ref_id()),
+            dsl::permission.eq(permission),
+        ))
         .on_conflict((dsl::task_id, dsl::user_id))
         .do_update()
         .set(dsl::permission.eq(permission));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.execute(connection) {
         Ok(_) => {
             event!(Level::TRACE, "Query succeeded");
             Ok(())
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -605,7 +764,12 @@ pub fn add_share_for_task(owner: &User, task_id: &i32, target: &Username, permis
 
 /// Remove the share row granting `target` access to the caller's task.
 /// A missing share row on a task the caller owns is a 404.
-pub fn remove_share(owner: &User, task_id: &i32, target: &Username, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn remove_share(
+    owner: &User,
+    task_id: &i32,
+    target: &Username,
+    connection: &mut PgConnection,
+) -> Result<(), ApplicationError> {
     require_task_owner(owner, task_id, connection)?;
 
     let target_user = get_user_by_name(target, connection)?;
@@ -616,17 +780,23 @@ pub fn remove_share(owner: &User, task_id: &i32, target: &Username, connection: 
         .filter(dsl::task_id.eq(task_id))
         .filter(dsl::user_id.eq(target_user.ref_id()));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.execute(connection) {
         Ok(0) => {
             event!(Level::ERROR, "No share row found to delete");
-            Err(ApplicationError::DieselError(diesel::result::Error::NotFound))
-        },
+            Err(ApplicationError::DieselError(
+                diesel::result::Error::NotFound,
+            ))
+        }
         Ok(_) => {
             event!(Level::TRACE, "Query succeeded");
             Ok(())
-        },
+        }
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -652,7 +822,11 @@ impl TaskShareInfo {
 }
 
 /// List all shares for a task owned by the caller.
-pub fn list_shares_for_task(owner: &User, task_id: &i32, connection: &mut PgConnection) -> Result<Vec<TaskShareInfo>, ApplicationError> {
+pub fn list_shares_for_task(
+    owner: &User,
+    task_id: &i32,
+    connection: &mut PgConnection,
+) -> Result<Vec<TaskShareInfo>, ApplicationError> {
     require_task_owner(owner, task_id, connection)?;
 
     use crate::schema::task_shares::dsl as share_dsl;
@@ -663,10 +837,20 @@ pub fn list_shares_for_task(owner: &User, task_id: &i32, connection: &mut PgConn
         .filter(share_dsl::task_id.eq(task_id))
         .select((user_dsl::username, share_dsl::permission));
 
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
 
     match query.load::<(String, SharePermission)>(connection) {
-        Ok(rows) => Ok(rows.into_iter().map(|(username, permission)| TaskShareInfo { username, permission }).collect()),
+        Ok(rows) => Ok(rows
+            .into_iter()
+            .map(|(username, permission)| TaskShareInfo {
+                username,
+                permission,
+            })
+            .collect()),
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -688,10 +872,19 @@ mod tests {
         (user, task)
     }
 
-    fn share_task(connection: &mut PgConnection, task: &crate::core::Task, user: &User, perm: SharePermission) {
+    fn share_task(
+        connection: &mut PgConnection,
+        task: &crate::core::Task,
+        user: &User,
+        perm: SharePermission,
+    ) {
         use crate::schema::task_shares::dsl::*;
         diesel::insert_into(task_shares)
-            .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(perm)))
+            .values((
+                task_id.eq(task.id()),
+                user_id.eq(user.ref_id()),
+                permission.eq(perm),
+            ))
             .execute(connection)
             .expect("Unable to insert task_shares row");
     }
@@ -703,7 +896,11 @@ mod tests {
 
         use crate::schema::task_shares::dsl::*;
         diesel::insert_into(task_shares)
-            .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(SharePermission::Read)))
+            .values((
+                task_id.eq(task.id()),
+                user_id.eq(user.ref_id()),
+                permission.eq(SharePermission::Read),
+            ))
             .execute(connection)
             .expect("Unable to insert task_shares row");
 
@@ -717,7 +914,11 @@ mod tests {
 
         // The UNIQUE (task_id, user_id) constraint must reject a duplicate pair
         let duplicate = diesel::insert_into(task_shares)
-            .values((task_id.eq(task.id()), user_id.eq(user.ref_id()), permission.eq(SharePermission::ReadWrite)))
+            .values((
+                task_id.eq(task.id()),
+                user_id.eq(user.ref_id()),
+                permission.eq(SharePermission::ReadWrite),
+            ))
             .execute(connection);
         assert!(duplicate.is_err());
     }
