@@ -26,6 +26,8 @@ macro_rules! build_app {
     }
 }
 
+// This is used by the test suite
+#[allow(unused_imports)]
 pub(crate) use build_app;
 
 /// Run the server on the given IP address and port.
