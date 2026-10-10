@@ -25,6 +25,7 @@ macro_rules! build_app {
                 .service(crate::web_api::whoami)
     }
 }
+
 pub(crate) use build_app;
 
 /// Run the server on the given IP address and port.

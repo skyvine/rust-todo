@@ -674,17 +674,6 @@ pub fn list_shares_for_task(owner: &User, task_id: &i32, connection: &mut PgConn
     }
 }
 
-/// Returns true if a user with the given name exists, false otherwise.
-pub fn user_exists(name: &String, connection: &mut PgConnection) -> Result<bool, ApplicationError> {
-    use crate::schema::users::dsl::*;
-    let query = users.filter(username.eq(name)).select(User::as_select());
-    event!(Level::TRACE, "Running query: {}", diesel::debug_query::<diesel::pg::Pg, _>(&query));
-    match query.load(connection) {
-        Ok(collection) => Ok(!collection.is_empty()),
-        Err(e) => Err(ApplicationError::DieselError(e))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
