@@ -1,6 +1,24 @@
 # Rust ToDo
 Rust ToDo is a REST API for task management written in Rust and using PostgresSQL as a backend.
 
+## Building and Running
+
+Build the image with docker:
+
+```
+docker build  --tag rust-todo .
+```
+
+Set up a postgres server. The script `scripts/run_test_database` can be used to set one up
+locally, but it is insecure (uses a weak password).
+
+Run the image, passing the postgres server's address, username, and password through an
+environment variable:
+
+```
+docker run -e DATABASE_URL=postgres://postgres:test-password@localhost/todo --network host --rm -it rust-todo
+```
+
 ## Endpoints
 
 All data is sent and received as JSON. All responses (aside from is\_alive) additionally
