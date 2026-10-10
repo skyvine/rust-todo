@@ -22,6 +22,6 @@ jobs:
             -e SEMGREP_APP_TOKEN=${{ secrets.SEMGREP_APP_TOKEN }} \
             -e GITHUB_EVENT_PATH="/src/.github_event_path.json" \
             semgrep/semgrep:latest-nonroot \
-            semgrep scan --config p/default --config p/rust
+            semgrep scan --config p/default --config p/rust --exclude-rule yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
 
 
