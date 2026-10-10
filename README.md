@@ -3,60 +3,60 @@ Rust ToDo is a REST API for task management written in Rust and using PostgresSQ
 
 ## Endpoints
 
-All data is sent and received as JSON. All responses (aside from is_alive) additionally
-include a request_id key which uniquely identifies the request.
+All data is sent and received as JSON. All responses (aside from is\_alive) additionally
+include a request\_id key which uniquely identifies the request.
 
 ### DELETE
 
 - /logout: Disable an auth key
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
-- /unshare_task: Remove a user's access to a task owned by the caller
+    - auth\_key [string]: An auth key as returned by the login endpoint.
+- /unshare\_task: Remove a user's access to a task owned by the caller
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to change.
     - username [string]: The username of the user whose access should be removed.
 
 ### GET
 
-- /all_tasks: Retrieve all tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
+- /all\_tasks: Retrieve all tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
   - Output keys:
     - tasks [array]: Tasks owned by the caller plus tasks shared with them.
-- /incomplete_tasks: Retrieve all incomplete tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
+- /incomplete\_tasks: Retrieve all incomplete tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
   - Output keys:
     - tasks [array]: Incomplete tasks owned by the caller plus tasks shared with them.
-- /is_alive: unconditionally returns an Ok status
-- /task_by_id: Retrieve the contents of a task based on its ID. Shared access (read or read-write) is honored.
+- /is\_alive: unconditionally returns an Ok status
+- /task\_by\_id: Retrieve the contents of a task based on its ID. Shared access (read or read-write) is honored.
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to retrieve.
   - Output keys:
-    - task [object]: An object that can be deserialized by `Task::from_json_object`.
-- /task_shares: List the shares on a task owned by the caller
+    - task [object]: An object that can be deserialized by `Task::from\_json\_object`.
+- /task\_shares: List the shares on a task owned by the caller
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task whose shares to list.
   - Output keys:
-    - shares [array]: Each item has `username` [string] and `permission` [string] ("read" or "read_write").
+    - shares [array]: Each item has `username` [string] and `permission` [string] ("read" or "read\_write").
 - /whoami: Retrieves the username of the currently logged in user
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
   - Output keys:
-    - username [string]: The name of the user associated with the auth_key
-- /user_by_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
+    - username [string]: The name of the user associated with the auth\_key
+- /user\_by\_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the user to resolve.
   - Output keys:
     - username [string]: The username of the user with the given id.
     - An unknown id returns 404.
 ### POST
 
-- /register_account: Creates a new account for future use.
+- /register\_account: Creates a new account for future use.
   - Input keys:
     - username [string]: The username for the new account. Must not already exist.
     - password [string]: The password for the new account.
@@ -65,45 +65,45 @@ include a request_id key which uniquely identifies the request.
     - username [string]: The username to log in with.
     - password [string]: The password associated with the user
   - Output keys:
-    - auth_key [string]: The auth_key which can be used for requests that require authentication
-- /add_task: Creates a new task
+    - auth\_key [string]: The auth\_key which can be used for requests that require authentication
+- /add\_task: Creates a new task
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - title [string]: The title of the new task (should be short)
     - description \[string] (optional): A description of the task (could be long)
   - Output keys:
     - id [number]: A unique identifier for the task.
-- /task_by_id: Changes some or all of the data contained in a task. Read-write shared access is honored: a user with a `read_write` share may update the task.
+- /task\_by\_id: Changes some or all of the data contained in a task. Read-write shared access is honored: a user with a `read\_write` share may update the task.
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to change.
     - completed \[bool] (optional): The new completed status of the task.
     - title \[string] (optional): The new title of the task.
     - description \[string] (optional): The new description of the task.
-- /share_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
+- /share\_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
   - Input keys:
-    - auth_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to share.
     - username [string]: The username of the user to share with.
-    - permission [string]: Either "read" or "read_write".
+    - permission [string]: Either "read" or "read\_write".
 
 ## Directory Map
-- .github/workflows/*:
+- .github/workflows/\*:
     - CI integrations
-- http_requests/*:
+- http\_requests/\*:
     - Raw HTTP requests useful for manually testing features against a running server
-- migrations/*:
+- migrations/\*:
     - Database migrations for use with Diesel
 - scripts
-    - run_from_container.sh:
+    - run\_from\_container.sh:
         - Helper script to run the application from inside a Docker container
-    - run_test_database.sh:
+    - run\_test\_database.sh:
         - Runs a PostgresSQL database in a docker container with username "postgres" and password "test-password"
         - Creates the todo table
 - src
     - core.rs
         - Core application logic for task management; notably, this contains all of the database logic.
-    - domain_types.rs
+    - domain\_types.rs
         - Contains data types which have application-specific logic attached, such as validation on construction or zeroization on drop.
     - lib.rs
         - Entry point for library code
@@ -111,5 +111,5 @@ include a request_id key which uniquely identifies the request.
         - Entry point for running the server
     - schema.rs
         - Generated by Diesel, contains support definitions that map the database schema to rust types
-    - web_api.rs
+    - web\_api.rs
         - Contains HTTP-specific logic, such as defining endpoints and returning appropriate status codes
