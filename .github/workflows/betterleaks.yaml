@@ -1,0 +1,26 @@
+name: Betterleaks
+on:
+  push:
+    branches:
+      - trunk
+
+jobs:
+  run_betterleaks:
+    name: Run Betterleaks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install go
+        run: |
+          apt install go
+
+      - name: Install Betterleaks
+        run: |
+          go install github.com/betterleaks/betterleaks/v2@latest
+
+      - name: Run Betterleaks
+        run: |
+          ~/go/bin/betterleaks --no-banner filesystem .
