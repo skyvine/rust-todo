@@ -23,4 +23,6 @@ jobs:
 
       - name: Run Betterleaks
         run: |
-          ~/go/bin/betterleaks --no-banner git .
+          # generic-password and generic-credential-uri create a bunch of false positives
+          # on the test infrastructure.
+          ~/go/bin/betterleaks --no-banner git . --disable-rule=generic-password --disable-rule=generic-credential-uri
