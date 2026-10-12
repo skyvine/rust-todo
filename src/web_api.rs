@@ -13,7 +13,7 @@ use crate::core::{
     Permission,
     SharePermission,
 };
-use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
+use crate::domain_types::{AuthKey, CleartextPassword, TaskDescription, TaskTitle, Username};
 
 use actix_web::{delete, get, post, HttpResponse, Responder};
 use actix_web::{
@@ -86,20 +86,8 @@ impl ApplicationError {
 /// The scheme an `Authorization` header must use to carry an auth key.
 const BEARER_SCHEME: &str = "Bearer";
 
-/// A user's secret auth key, taken from the `Authorization` header.
-///
-/// The key lives in a newtype so that it is zeroized as soon as the request is
-/// done with it, matching the `ZeroizeOnDrop` payload structs.
-#[derive(ZeroizeOnDrop)]
-pub struct AuthKey(String);
-
 #[allow(dead_code)]
 impl AuthKey {
-    /// The key itself, for handing to [`crate::core::auth_key_to_user`].
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
     /// Reads the key out of an `Authorization` header.
     ///
     /// The header is exactly `Bearer <key>`: a missing header, another scheme,
@@ -115,7 +103,7 @@ impl AuthKey {
         match (words.next(), words.next(), words.next()) {
             // Schemes are case insensitive, so `bearer` is `Bearer` as well.
             (Some(scheme), Some(key), None) if scheme.eq_ignore_ascii_case(BEARER_SCHEME) => {
-                Ok(AuthKey(String::from(key)))
+                Ok(AuthKey::new(String::from(key)))
             },
             _ => Err(unauthorized_error(request_id)),
         }

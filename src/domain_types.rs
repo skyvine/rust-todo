@@ -1,5 +1,24 @@
 use zeroize::ZeroizeOnDrop;
 
+/// A user's secret auth key, taken from the `Authorization` header.
+///
+/// The key lives in a newtype so that it is zeroized as soon as the request is
+/// done with it, matching the `ZeroizeOnDrop` payload structs.
+#[derive(ZeroizeOnDrop)]
+pub struct AuthKey(String);
+
+#[allow(dead_code)]
+impl AuthKey {
+    /// The key itself, for handing to [`crate::core::auth_key_to_user`].
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn new(key: String) -> Self {
+        Self(key)
+    }
+}
+
 #[derive(ZeroizeOnDrop)]
 pub(crate) struct CleartextPassword(String);
 
