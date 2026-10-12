@@ -12,7 +12,7 @@ Change `GET /user_by_id` from a JSON body (`GetUserByIdPayload`) to the
 
 - Add a query struct, e.g. `UserByIdQuery { id: i32 }`.
 - Replace `payload: actix_web::web::Json<GetUserByIdPayload>` with the
-  `BearerAuth` extractor plus `web::Query<UserByIdQuery>`; use the extracted key
+  `AuthKey` extractor plus `web::Query<UserByIdQuery>`; use the extracted key
   for `auth_key_to_user` and `query.id` for the user id.
 - Delete the `GetUserByIdPayload` struct.
 - Update tests that call `/user_by_id`:

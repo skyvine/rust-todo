@@ -9,7 +9,7 @@ Add the shared plumbing that every migrated GET endpoint will use:
 
 1. An `AuthKey` newtype that zeroizes on drop (consistent with the existing
    `ZeroizeOnDrop` payload structs).
-2. A `BearerAuth` extractor (`FromRequest`) that parses
+2. An extractor (`FromRequest`) for `AuthKey` that parses
    `Authorization: Bearer <auth_key>` and returns the key.
 3. A `QueryConfig` error handler so that a missing/malformed query parameter
    produces the standard JSON 400 error body instead of actix's plain-text

@@ -11,7 +11,7 @@ to the `Authorization: Bearer` header.
 ## Changes
 
 - Replace `payload: actix_web::web::Json<GetIncompleteTasksPayload>` with the
-  `BearerAuth` extractor; use the extracted key for `auth_key_to_user`.
+  `AuthKey` extractor; use the extracted key for `auth_key_to_user`.
 - Delete the `GetIncompleteTasksPayload` struct.
 - Update tests that call `/incomplete_tasks`:
   - `can_get_incomplete_tasks`

@@ -13,7 +13,7 @@ Change `GET /task_by_id` from a JSON body (`GetTaskByIdPayload`) to the
 - Add a query struct, e.g. `TaskByIdQuery { id: i32 }` (serde-deserializable by
   actix's `web::Query`).
 - Replace `payload: actix_web::web::Json<GetTaskByIdPayload>` with the
-  `BearerAuth` extractor plus `web::Query<TaskByIdQuery>`; use the extracted key
+  `AuthKey` extractor plus `web::Query<TaskByIdQuery>`; use the extracted key
   for `auth_key_to_user` and `query.id` for the task id.
 - Delete the `GetTaskByIdPayload` struct.
 - Update tests that call `/task_by_id`:

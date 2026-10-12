@@ -89,15 +89,9 @@ const BEARER_SCHEME: &str = "Bearer";
 /// A user's secret auth key, taken from the `Authorization` header.
 ///
 /// The key lives in a newtype so that it is zeroized as soon as the request is
-/// done with it, matching the `ZeroizeOnDrop` payload structs. Handlers take
-/// it as [`BearerAuth`].
+/// done with it, matching the `ZeroizeOnDrop` payload structs.
 #[derive(ZeroizeOnDrop)]
 pub struct AuthKey(String);
-
-/// The [`AuthKey`] an authenticated request carries, as it appears in handler
-/// signatures: `async fn whoami(auth: BearerAuth)`.
-#[allow(dead_code)]
-pub type BearerAuth = AuthKey;
 
 #[allow(dead_code)]
 impl AuthKey {
@@ -1663,7 +1657,7 @@ mod tests {
     /// shared extractors pulled out of the request, so the extraction itself
     /// is observable while no endpoint uses it yet.
     #[get("/test_extractor_probe")]
-    async fn extractor_probe(auth: super::BearerAuth, query: web::Query<IdQuery>) -> String {
+    async fn extractor_probe(auth: super::AuthKey, query: web::Query<IdQuery>) -> String {
         format!("{}", serde_json::json!({"auth_key": auth.as_str(), "id": query.id}))
     }
 

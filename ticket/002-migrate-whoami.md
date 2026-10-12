@@ -10,7 +10,7 @@ Change `GET /whoami` from a JSON body (`WhoAmIPayload`) to the
 
 ## Changes
 
-- Replace `payload: actix_web::web::Json<WhoAmIPayload>` with the `BearerAuth`
+- Replace `payload: actix_web::web::Json<WhoAmIPayload>` with the `AuthKey`
   extractor from ticket 001; use the extracted key for `auth_key_to_user`.
 - Delete the `WhoAmIPayload` struct.
 - Update tests that call `/whoami`:

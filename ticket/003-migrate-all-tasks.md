@@ -11,7 +11,7 @@ Change `GET /all_tasks` from a JSON body (`GetAllTasksPayload`) to the
 ## Changes
 
 - Replace `payload: actix_web::web::Json<GetAllTasksPayload>` with the
-  `BearerAuth` extractor; use the extracted key for `auth_key_to_user`.
+  `AuthKey` extractor; use the extracted key for `auth_key_to_user`.
 - Delete the `GetAllTasksPayload` struct.
 - Update tests that call `/all_tasks`:
   - `can_get_all_tasks`

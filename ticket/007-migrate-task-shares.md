@@ -12,7 +12,7 @@ Change `GET /task_shares` from a JSON body (`GetTaskSharesPayload`) to the
 
 - Add a query struct, e.g. `TaskSharesQuery { id: i32 }`.
 - Replace `payload: actix_web::web::Json<GetTaskSharesPayload>` with the
-  `BearerAuth` extractor plus `web::Query<TaskSharesQuery>`; use the extracted
+  `AuthKey` extractor plus `web::Query<TaskSharesQuery>`; use the extracted
   key for `auth_key_to_user` and `query.id` for the task id.
 - Delete the `GetTaskSharesPayload` struct.
 - Update the `get_task_shares` test helper and every test that calls
