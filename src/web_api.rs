@@ -16,7 +16,9 @@ use crate::core::{
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
 use actix_web::{delete, get, post, HttpResponse, Responder};
-use actix_web::{dev::Payload, error::InternalError, Error, FromRequest, HttpRequest};
+use actix_web::{
+    dev::Payload, error::InternalError, error::QueryPayloadError, Error, FromRequest, HttpRequest,
+};
 use argon2::{
     password_hash::{
         rand_core::OsRng, PasswordHash, PasswordHasher, SaltString
@@ -148,6 +150,16 @@ impl FromRequest for AuthKey {
         let request_id = Uuid::new_v4();
         ready(AuthKey::from_header(req, request_id))
     }
+}
+
+/// Turns a query string actix refuses to deserialize into the same JSON error
+/// body as the rest of the API, instead of actix's plain text default.
+///
+/// Registered app-wide in `build_app!` as the `QueryConfig` error handler.
+pub fn query_error_handler(err: QueryPayloadError, _req: &HttpRequest) -> Error {
+    let request_id = Uuid::new_v4();
+    event!(Level::ERROR, "Unable to read the query string: {err}");
+    InternalError::from_response(err, HttpResponse::BadRequest().body(error_body(request_id))).into()
 }
 
 // DELETE endpoints
@@ -725,9 +737,10 @@ mod tests {
     use actix_http::Request;
     use actix_web::http::header::AUTHORIZATION;
     use actix_web::get;
-    use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App, Error};
+    use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, web, App, Error};
     use crate::{build_app, core::Task};
     use ctor::ctor;
+    use serde::Deserialize;
     use tracing_subscriber::{fmt, EnvFilter};
     use uuid::Uuid;
 
@@ -1640,17 +1653,25 @@ mod tests {
 
     // Shared extractor tests
 
-    /// A route that only exists for these tests: it echoes back whatever the
-    /// shared extractor pulled out of the request, so the extraction itself is
-    /// observable while no endpoint uses it yet.
-    #[get("/test_extractor_probe")]
-    async fn extractor_probe(auth: super::BearerAuth) -> String {
-        format!("{}", serde_json::json!({"auth_key": auth.as_str()}))
+    /// The query the endpoints read their task or user id from.
+    #[derive(Deserialize)]
+    struct IdQuery {
+        id: i32,
     }
 
-    /// The probe route, so the extraction can be exercised on its own.
+    /// A route that only exists for these tests: it echoes back whatever the
+    /// shared extractors pulled out of the request, so the extraction itself
+    /// is observable while no endpoint uses it yet.
+    #[get("/test_extractor_probe")]
+    async fn extractor_probe(auth: super::BearerAuth, query: web::Query<IdQuery>) -> String {
+        format!("{}", serde_json::json!({"auth_key": auth.as_str(), "id": query.id}))
+    }
+
+    /// The extraction plumbing `build_app!` registers, plus the probe route.
     async fn init_probe_app() -> impl Service<Request, Response = ServiceResponse, Error = Error> {
-        let app = App::new().service(extractor_probe);
+        let app = App::new()
+            .app_data(web::QueryConfig::default().error_handler(super::query_error_handler))
+            .service(extractor_probe);
         test::init_service(app).await
     }
 
@@ -1671,11 +1692,13 @@ mod tests {
         let app = init_probe_app().await;
 
         let request = test::TestRequest::get()
-            .uri("/test_extractor_probe")
+            .uri("/test_extractor_probe?id=7")
             .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
             .to_request();
         let response = assert_response_success(test::call_service(&app, request).await, "Could not read the auth header.");
-        assert_eq!(probe_body(response)["auth_key"], "some-auth-key", "The handler should see the key.");
+        let body = probe_body(response);
+        assert_eq!(body["auth_key"], "some-auth-key", "The handler should see the key.");
+        assert_eq!(body["id"], 7, "The handler should see the query parameter.");
     }
 
     #[actix_web::test]
@@ -1683,7 +1706,7 @@ mod tests {
         let app = init_probe_app().await;
 
         let request = test::TestRequest::get()
-            .uri("/test_extractor_probe")
+            .uri("/test_extractor_probe?id=7")
             .insert_header((AUTHORIZATION, "bearer some-auth-key"))
             .to_request();
         let response = assert_response_success(test::call_service(&app, request).await, "A lowercase scheme is the Bearer scheme too.");
@@ -1694,7 +1717,7 @@ mod tests {
     async fn missing_authorization_header_is_rejected() {
         let app = init_probe_app().await;
 
-        let request = test::TestRequest::get().uri("/test_extractor_probe").to_request();
+        let request = test::TestRequest::get().uri("/test_extractor_probe?id=7").to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status().as_u16(), 401, "A missing auth header should be a 401.");
         assert_json_error_with_request_id(response);
@@ -1714,11 +1737,32 @@ mod tests {
 
         for header_value in malformed_headers {
             let request = test::TestRequest::get()
-                .uri("/test_extractor_probe")
+                .uri("/test_extractor_probe?id=7")
                 .insert_header((AUTHORIZATION, header_value))
                 .to_request();
             let response = test::call_service(&app, request).await;
             assert_eq!(response.status().as_u16(), 401, "{header_value:?} should be a 401.");
+            assert_json_error_with_request_id(response);
+        }
+    }
+
+    #[actix_web::test]
+    async fn missing_or_non_numeric_id_is_rejected() {
+        let app = init_probe_app().await;
+
+        let bad_queries = [
+            "/test_extractor_probe",
+            "/test_extractor_probe?id=",
+            "/test_extractor_probe?id=not-a-number",
+        ];
+
+        for uri in bad_queries {
+            let request = test::TestRequest::get()
+                .uri(uri)
+                .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
             assert_json_error_with_request_id(response);
         }
     }
