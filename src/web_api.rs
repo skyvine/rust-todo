@@ -16,6 +16,7 @@ use crate::core::{
 use crate::domain_types::{CleartextPassword, TaskDescription, TaskTitle, Username};
 
 use actix_web::{delete, get, post, HttpResponse, Responder};
+use actix_web::{dev::Payload, error::InternalError, Error, FromRequest, HttpRequest};
 use argon2::{
     password_hash::{
         rand_core::OsRng, PasswordHash, PasswordHasher, SaltString
@@ -24,6 +25,7 @@ use argon2::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::future::{ready, Ready};
 use tracing::{event, span, Level};
 use uuid::Uuid;
 use zeroize::{ZeroizeOnDrop};
@@ -70,6 +72,81 @@ impl ApplicationError {
             }
             ApplicationError::UserExists => HttpResponse::Conflict().body(error_body(request_id)),
         }
+    }
+}
+
+// Shared request extractors
+//
+// Nothing asks for these until the GET endpoints are migrated onto them, so
+// they read as dead code until then. Each `allow` goes away with the last
+// endpoint that needed it.
+
+/// The scheme an `Authorization` header must use to carry an auth key.
+const BEARER_SCHEME: &str = "Bearer";
+
+/// A user's secret auth key, taken from the `Authorization` header.
+///
+/// The key lives in a newtype so that it is zeroized as soon as the request is
+/// done with it, matching the `ZeroizeOnDrop` payload structs. Handlers take
+/// it as [`BearerAuth`].
+#[derive(ZeroizeOnDrop)]
+pub struct AuthKey(String);
+
+/// The [`AuthKey`] an authenticated request carries, as it appears in handler
+/// signatures: `async fn whoami(auth: BearerAuth)`.
+#[allow(dead_code)]
+pub type BearerAuth = AuthKey;
+
+#[allow(dead_code)]
+impl AuthKey {
+    /// The key itself, for handing to [`crate::core::auth_key_to_user`].
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Reads the key out of an `Authorization` header.
+    ///
+    /// The header is exactly `Bearer <key>`: a missing header, another scheme,
+    /// an empty key or a trailing word are all malformed.
+    fn from_header(req: &HttpRequest, request_id: Uuid) -> Result<Self, Error> {
+        let mut words = req
+            .headers()
+            .get(actix_web::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .split_whitespace();
+
+        match (words.next(), words.next(), words.next()) {
+            // Schemes are case insensitive, so `bearer` is `Bearer` as well.
+            (Some(scheme), Some(key), None) if scheme.eq_ignore_ascii_case(BEARER_SCHEME) => {
+                Ok(AuthKey(String::from(key)))
+            },
+            _ => Err(unauthorized_error(request_id)),
+        }
+    }
+}
+
+/// Turns a missing or malformed `Authorization` header into the same 401 an
+/// invalid key gets, so a client cannot tell the two apart.
+#[allow(dead_code)]
+fn unauthorized_error(request_id: Uuid) -> Error {
+    // The header itself is deliberately not logged: it may hold a valid key.
+    event!(Level::ERROR, "Missing or malformed Authorization header");
+    InternalError::from_response(
+        "Missing or malformed Authorization header",
+        HttpResponse::Unauthorized().body(error_body(request_id))
+    ).into()
+}
+
+impl FromRequest for AuthKey {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        // The handler never runs, so the id of the rejected request has to be
+        // generated here rather than alongside the handler's own span.
+        let request_id = Uuid::new_v4();
+        ready(AuthKey::from_header(req, request_id))
     }
 }
 
@@ -646,10 +723,13 @@ pub async fn get_task_shares(payload: actix_web::web::Json<GetTaskSharesPayload>
 #[cfg(test)]
 mod tests {
     use actix_http::Request;
-    use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App};
+    use actix_web::http::header::AUTHORIZATION;
+    use actix_web::get;
+    use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, App, Error};
     use crate::{build_app, core::Task};
     use ctor::ctor;
     use tracing_subscriber::{fmt, EnvFilter};
+    use uuid::Uuid;
 
     #[ctor]
     unsafe fn global_init() {
@@ -1556,5 +1636,100 @@ mod tests {
         }).to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status().as_u16(), 404, "Unknown user id should return 404.");
+    }
+
+    // Shared extractor tests
+
+    /// A route that only exists for these tests: it echoes back whatever the
+    /// shared extractor pulled out of the request, so the extraction itself is
+    /// observable while no endpoint uses it yet.
+    #[get("/test_extractor_probe")]
+    async fn extractor_probe(auth: super::BearerAuth) -> String {
+        format!("{}", serde_json::json!({"auth_key": auth.as_str()}))
+    }
+
+    /// The probe route, so the extraction can be exercised on its own.
+    async fn init_probe_app() -> impl Service<Request, Response = ServiceResponse, Error = Error> {
+        let app = App::new().service(extractor_probe);
+        test::init_service(app).await
+    }
+
+    /// What the probe route echoed back.
+    fn probe_body(response: ServiceResponse) -> serde_json::Value {
+        serde_json::from_slice(&response.into_body().try_into_bytes().unwrap()).unwrap()
+    }
+
+    /// Asserts the response carries the API's standard error body: a JSON
+    /// object holding the id of the request that failed.
+    fn assert_json_error_with_request_id(response: ServiceResponse) {
+        let request_id = extract_json_string(response, "request_id");
+        assert!(Uuid::parse_str(&request_id).is_ok(), "{request_id:?} is not a request id.");
+    }
+
+    #[actix_web::test]
+    async fn bearer_auth_yields_the_key() {
+        let app = init_probe_app().await;
+
+        let request = test::TestRequest::get()
+            .uri("/test_extractor_probe")
+            .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
+            .to_request();
+        let response = assert_response_success(test::call_service(&app, request).await, "Could not read the auth header.");
+        assert_eq!(probe_body(response)["auth_key"], "some-auth-key", "The handler should see the key.");
+    }
+
+    #[actix_web::test]
+    async fn bearer_scheme_is_case_insensitive() {
+        let app = init_probe_app().await;
+
+        let request = test::TestRequest::get()
+            .uri("/test_extractor_probe")
+            .insert_header((AUTHORIZATION, "bearer some-auth-key"))
+            .to_request();
+        let response = assert_response_success(test::call_service(&app, request).await, "A lowercase scheme is the Bearer scheme too.");
+        assert_eq!(probe_body(response)["auth_key"], "some-auth-key");
+    }
+
+    #[actix_web::test]
+    async fn missing_authorization_header_is_rejected() {
+        let app = init_probe_app().await;
+
+        let request = test::TestRequest::get().uri("/test_extractor_probe").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status().as_u16(), 401, "A missing auth header should be a 401.");
+        assert_json_error_with_request_id(response);
+    }
+
+    #[actix_web::test]
+    async fn malformed_authorization_header_is_rejected() {
+        let app = init_probe_app().await;
+
+        let malformed_headers = [
+            "Basic some-auth-key",      // wrong scheme
+            "some-auth-key",            // no scheme at all
+            "Bearer",                   // no key
+            "Bearer ",                  // empty key
+            "Bearer some-auth-key and", // trailing word
+        ];
+
+        for header_value in malformed_headers {
+            let request = test::TestRequest::get()
+                .uri("/test_extractor_probe")
+                .insert_header((AUTHORIZATION, header_value))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(response.status().as_u16(), 401, "{header_value:?} should be a 401.");
+            assert_json_error_with_request_id(response);
+        }
+    }
+
+    #[actix_web::test]
+    async fn auth_key_zeroizes_on_drop() {
+        // `ZeroizeOnDrop` is a marker trait that the derive implements next to
+        // the `Drop` impl wiping the key, so this bound is the compile time
+        // proof that the key does not outlive its request. Asserting on the
+        // bytes themselves would mean reading memory the key no longer owns.
+        fn assert_zeroizes_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroizes_on_drop::<super::AuthKey>();
     }
 }
