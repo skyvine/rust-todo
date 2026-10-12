@@ -1695,7 +1695,7 @@ mod tests {
             .uri("/test_extractor_probe?id=7")
             .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
             .to_request();
-        let response = assert_response_success(test::call_service(&app, request).await, "Could not read the auth header.");
+        let response = assert_response_success(test::call_service(&app, request).await, "Service call unsuccessful.");
         let body = probe_body(response);
         assert_eq!(body["auth_key"], "some-auth-key", "The handler should see the key.");
         assert_eq!(body["id"], 7, "The handler should see the query parameter.");
