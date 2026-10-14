@@ -943,7 +943,7 @@ mod tests {
 
         let task_id = extract_json_i32(add_task_response, "task_id");
         let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: auth_key, id: task_id
+            auth_key, id: task_id
         }).to_request();
         let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task.");
         let task = extract_json_from_constructor(get_task_response, "task", Task::from_json_object);
@@ -1031,7 +1031,7 @@ mod tests {
         assert_response_success(test::call_service(&app, update_request).await, "Unable to update task.");
 
         let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: auth_key,
+            auth_key,
             id: task_id,
         }).to_request();
         let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task after creating.");
@@ -1081,7 +1081,7 @@ mod tests {
         assert_response_success(test::call_service(&app, update_request).await, "Unable to update first task.");
 
         let get_second = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: auth_key, id: second_task_id
+            auth_key, id: second_task_id
         }).to_request();
         let get_second_response = assert_response_success(test::call_service(&app, get_second).await, "Unable to get second task.");
         let second_task = extract_json_from_constructor(get_second_response, "task", Task::from_json_object).unwrap();
