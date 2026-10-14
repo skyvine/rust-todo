@@ -56,9 +56,10 @@ include a request\_id key which uniquely identifies the request.
   - Output keys:
     - task [object]: An object that can be deserialized by `Task::from\_json\_object`.
 - /task\_shares: List the shares on a task owned by the caller
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the task whose shares to list.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Query parameters:
+    - id [number]: The id of the task whose shares to list, e.g. `GET /task\_shares?id=1`.
   - Output keys:
     - shares [array]: Each item has `username` [string] and `permission` [string] ("read" or "read\_write").
 - /whoami: Retrieves the username of the currently logged in user

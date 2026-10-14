@@ -660,26 +660,26 @@ pub async fn unshare_task(mut payload: actix_web::web::Json<UnshareTaskPayload>)
     }
 }
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct GetTaskSharesPayload {
-    auth_key: String,
+/// The query `GET /task_shares` reads the task id from.
+#[derive(Deserialize)]
+struct TaskSharesQuery {
     id: i32,
 }
 
 /// Lists the shares on a task owned by the caller.
 #[get("/task_shares")]
-pub async fn get_task_shares(payload: actix_web::web::Json<GetTaskSharesPayload>) -> impl Responder {
+pub async fn get_task_shares(auth_key: AuthKey, query: actix_web::web::Query<TaskSharesQuery>) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Task Shares", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
-            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match list_shares_for_task(&owner, &payload.id, &mut connection) {
+            match list_shares_for_task(&owner, &query.id, &mut connection) {
                 Ok(shares) => {
                     let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
                         json!({"username": s.username(), "permission": s.permission().as_stored_text()})
@@ -1153,9 +1153,9 @@ mod tests {
     }
 
     async fn get_task_shares(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32) -> ServiceResponse {
-        let request = test::TestRequest::get().uri("/task_shares").set_json(super::GetTaskSharesPayload {
-            auth_key: String::from(auth_key), id,
-        }).to_request();
+        let request = test::TestRequest::get().uri(&format!("/task_shares?id={id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
         test::call_service(app, request).await
     }
 
@@ -1430,6 +1430,22 @@ mod tests {
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
 
         assert_eq!(get_task_shares(&app, &grantee_key, task_id).await.status().as_u16(), 401);
+    }
+
+    #[actix_web::test]
+    async fn cannot_list_shares_without_a_valid_id_query_parameter() {
+        let username = "cannot-list-shares-without-id-username";
+        let password = "cannot-list-shares-without-id-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        for uri in ["/task_shares", "/task_shares?id=", "/task_shares?id=not-a-number"] {
+            let request = test::TestRequest::get().uri(uri).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
+            assert_json_error_with_request_id(response);
+        }
     }
 
     #[actix_web::test]
