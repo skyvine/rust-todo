@@ -217,9 +217,9 @@ pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
     }
 }
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct GetTaskByIdPayload {
-    auth_key: String,
+/// The query `GET /task_by_id` reads the task id from.
+#[derive(Deserialize)]
+struct TaskByIdQuery {
     id: i32,
 }
 
@@ -228,7 +228,7 @@ struct GetTaskByIdPayload {
 /// The user must be logged in as the task's owner or have a share on
 /// the task in order to get the task.
 #[get("/task_by_id")]
-pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -> impl Responder {
+pub async fn get_task_by_id(auth_key: AuthKey, query: actix_web::web::Query<TaskByIdQuery>) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Task by ID", %request_id).entered();
 
@@ -236,22 +236,22 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
     match establish_connection() {
         Ok(mut connection) => {
             // Authenticate before fetching anything
-            let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let user = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
             // Owner, read-only, and read-write share holders may all view
             // the task; anyone else gets the same 401.
-            match get_task_permission(&user, &payload.id, &mut connection) {
+            match get_task_permission(&user, &query.id, &mut connection) {
                 Ok(Permission::Owner) | Ok(Permission::ReadOnly) | Ok(Permission::ReadWrite) => {
-                    match crate::core::get_task_by_id(&payload.id, &mut connection) {
+                    match crate::core::get_task_by_id(&query.id, &mut connection) {
                         Ok(task) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task}))),
                         Err(e) => e.into_http_response(&format!("{request_id}")),
                     }
                 },
                 Ok(_) => {
-                    event!(Level::ERROR, "Cannot get task {}: user {} has no task access", payload.id, user.ref_id());
+                    event!(Level::ERROR, "Cannot get task {}: user {} has no task access", query.id, user.ref_id());
                     HttpResponse::Unauthorized().body(error_body(request_id))
                 },
                 Err(e) => match e {
@@ -259,7 +259,7 @@ pub async fn get_task_by_id(payload: actix_web::web::Json<GetTaskByIdPayload>) -
                     // task": both are the same 401 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
-                        event!(Level::ERROR, "Cannot get task {}: not found", payload.id);
+                        event!(Level::ERROR, "Cannot get task {}: not found", query.id);
                         HttpResponse::Unauthorized().body(error_body(request_id))
                     },
                     other => other.into_http_response(&format!("{request_id}")),
@@ -937,9 +937,7 @@ mod tests {
         let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
 
         let task_id = extract_json_i32(add_task_response, "task_id");
-        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key, id: task_id
-        }).to_request();
+        let get_task_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task.");
         let task = extract_json_from_constructor(get_task_response, "task", Task::from_json_object);
         assert_eq!(*task.unwrap().id(), task_id);
@@ -961,9 +959,7 @@ mod tests {
 
         let non_owner_auth_key = register_and_login(&app, non_owner_username, non_owner_password).await;
 
-        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: non_owner_auth_key, id: task_id
-        }).to_request();
+        let get_task_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {non_owner_auth_key}"))).to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
         assert!(get_task_response.status().is_client_error(), "Getting task did not indicate client error.");
     }
@@ -976,12 +972,26 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key, id: -1
-        }).to_request();
+        let get_task_request = test::TestRequest::get().uri("/task_by_id?id=-1").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
         // A missing task must look the same as a task owned by someone else: 401, not 404.
         assert_eq!(get_task_response.status().as_u16(), 401, "Getting a nonexistent task should not reveal its nonexistence.");
+    }
+
+    #[actix_web::test]
+    async fn cannot_get_task_without_a_valid_id_query_parameter() {
+        let username = "cannot-get-task-without-id-username";
+        let password = "cannot-get-task-without-id-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        for uri in ["/task_by_id", "/task_by_id?id=", "/task_by_id?id=not-a-number"] {
+            let get_task_request = test::TestRequest::get().uri(uri).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+            let get_task_response = test::call_service(&app, get_task_request).await;
+            assert_eq!(get_task_response.status().as_u16(), 400, "{uri} should be a 400.");
+            assert_json_error_with_request_id(get_task_response);
+        }
     }
 
     #[actix_web::test]
@@ -1025,10 +1035,7 @@ mod tests {
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "Unable to update task.");
 
-        let get_task_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key,
-            id: task_id,
-        }).to_request();
+        let get_task_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task after creating.");
         extract_json_from_constructor(get_task_response, "task", Task::from_json_object).unwrap()
     }
@@ -1075,9 +1082,7 @@ mod tests {
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "Unable to update first task.");
 
-        let get_second = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key, id: second_task_id
-        }).to_request();
+        let get_second = test::TestRequest::get().uri(&format!("/task_by_id?id={second_task_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let get_second_response = assert_response_success(test::call_service(&app, get_second).await, "Unable to get second task.");
         let second_task = extract_json_from_constructor(get_second_response, "task", Task::from_json_object).unwrap();
         assert!(!second_task.completed(), "Updating one task changed another task's completion state");
@@ -1311,9 +1316,7 @@ mod tests {
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "read_write grantee should be able to update the task");
 
-        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: owner_key, id: task_id,
-        }).to_request();
+        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
         let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
         let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
         assert!(*task.completed());
@@ -1350,9 +1353,7 @@ mod tests {
         assert_eq!(update_response.status().as_u16(), 401, "read-only sharee must not update the task");
 
         // The task itself must be unchanged.
-        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: owner_key, id: task_id,
-        }).to_request();
+        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
         let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
         let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
         assert!(!task.completed(), "read-only sharee's update must not have been applied");
@@ -1386,9 +1387,7 @@ mod tests {
         assert_eq!(update_response.status().as_u16(), 401, "Unrelated user must not update the task");
 
         // The task itself must be unchanged.
-        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: owner_key, id: task_id,
-        }).to_request();
+        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
         let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
         let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
         assert!(!task.completed(), "Unrelated user's update must not have been applied");
@@ -1450,9 +1449,7 @@ mod tests {
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
 
         // The grantee can now fetch the task directly...
-        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: grantee_key.clone(), id: task_id,
-        }).to_request();
+        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
         let get_response = assert_response_success(test::call_service(&app, get_request).await, "grantee should be able to get the shared task");
         let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
         assert_eq!(*task.id(), task_id);
@@ -1487,9 +1484,7 @@ mod tests {
 
         assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
 
-        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: grantee_key.clone(), id: task_id,
-        }).to_request();
+        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
         assert_response_success(test::call_service(&app, get_request).await, "read_write grantee should be able to get the task");
 
         let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
@@ -1513,9 +1508,7 @@ mod tests {
         let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
-        let get_request = test::TestRequest::get().uri("/task_by_id").set_json(super::GetTaskByIdPayload {
-            auth_key: stranger_key.clone(), id: task_id,
-        }).to_request();
+        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {stranger_key}"))).to_request();
         let get_response = test::call_service(&app, get_request).await;
         assert_eq!(get_response.status().as_u16(), 401);
 
@@ -1609,7 +1602,7 @@ mod tests {
 
     /// A route that only exists for these tests: it echoes back whatever the
     /// shared extractors pulled out of the request, so the extraction itself
-    /// is observable while no endpoint uses it yet.
+    /// is observable independently of any single endpoint.
     #[get("/test_extractor_probe")]
     async fn extractor_probe(auth: super::AuthKey, query: web::Query<IdQuery>) -> String {
         format!("{}", serde_json::json!({"auth_key": auth.as_str(), "id": query.id}))

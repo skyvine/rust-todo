@@ -49,9 +49,10 @@ include a request\_id key which uniquely identifies the request.
     - tasks [array]: Incomplete tasks owned by the caller plus tasks shared with them.
 - /is\_alive: unconditionally returns an Ok status
 - /task\_by\_id: Retrieve the contents of a task based on its ID. Shared access (read or read-write) is honored.
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the task to retrieve.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Query parameters:
+    - id [number]: The id of the task to retrieve, e.g. `GET /task\_by\_id?id=1`.
   - Output keys:
     - task [object]: An object that can be deserialized by `Task::from\_json\_object`.
 - /task\_shares: List the shares on a task owned by the caller
