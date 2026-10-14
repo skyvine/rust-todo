@@ -67,9 +67,10 @@ include a request\_id key which uniquely identifies the request.
   - Output keys:
     - username [string]: The name of the user associated with the auth\_key
 - /user\_by\_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the user to resolve.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Query parameters:
+    - id [number]: The id of the user to resolve, e.g. `GET /user\_by\_id?id=1`.
   - Output keys:
     - username [string]: The username of the user with the given id.
     - An unknown id returns 404.

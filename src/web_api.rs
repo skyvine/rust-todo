@@ -283,9 +283,9 @@ pub async fn is_alive() -> impl Responder {
     HttpResponse::Ok()
 }
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct GetUserByIdPayload {
-    auth_key: String,
+/// The query `GET /user_by_id` reads the user id from.
+#[derive(Deserialize)]
+struct UserByIdQuery {
     id: i32,
 }
 
@@ -293,18 +293,18 @@ struct GetUserByIdPayload {
 /// responses) to that user's username. User ids are public, so an unknown
 /// id simply returns 404.
 #[get("/user_by_id")]
-pub async fn get_user_by_id(payload: actix_web::web::Json<GetUserByIdPayload>) -> impl Responder {
+pub async fn get_user_by_id(auth_key: AuthKey, query: actix_web::web::Query<UserByIdQuery>) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get User By ID", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
-            let _user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let _user = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::get_user_by_id(&payload.id, &mut connection) {
+            match crate::core::get_user_by_id(&query.id, &mut connection) {
                 Ok(user) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "username": user.ref_username()}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
@@ -1567,10 +1567,7 @@ mod tests {
             *user.ref_id()
         };
 
-        let request = test::TestRequest::get().uri("/user_by_id").set_json(super::GetUserByIdPayload {
-            auth_key,
-            id: user_id,
-        }).to_request();
+        let request = test::TestRequest::get().uri(&format!("/user_by_id?id={user_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let response = assert_response_success(test::call_service(&app, request).await, "User by id lookup failed.");
         let response_name = extract_json_string(response, "username");
         assert_eq!(username, response_name);
@@ -1584,12 +1581,25 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let request = test::TestRequest::get().uri("/user_by_id").set_json(super::GetUserByIdPayload {
-            auth_key,
-            id: -1,
-        }).to_request();
+        let request = test::TestRequest::get().uri("/user_by_id?id=-1").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status().as_u16(), 404, "Unknown user id should return 404.");
+    }
+
+    #[actix_web::test]
+    async fn cannot_get_user_without_a_valid_id_query_parameter() {
+        let username = "cannot-get-user-without-id-username";
+        let password = "cannot-get-user-without-id-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        for uri in ["/user_by_id", "/user_by_id?id=", "/user_by_id?id=not-a-number"] {
+            let request = test::TestRequest::get().uri(uri).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
+            assert_json_error_with_request_id(response);
+        }
     }
 
     // Shared extractor tests
