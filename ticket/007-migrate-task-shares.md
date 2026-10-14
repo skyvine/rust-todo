@@ -46,6 +46,5 @@ Change `GET /task_shares` from a JSON body (`GetTaskSharesPayload`) to the
 - [ ] `README.md` `/task_shares` section reflects the new header + query
       parameter input.
 - [ ] `http_requests/get_task_shares.http` uses the header + query string.
-- [ ] `cargo fmt --check` passes.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.

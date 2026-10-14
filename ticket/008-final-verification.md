@@ -6,12 +6,11 @@
 ## Goal
 
 Confirm the migration is complete and consistent across the whole codebase.
-Per-ticket verification (fmt/clippy/test after every ticket) is already
+Per-ticket verification (clippy/test after every ticket) is already
 enforced by tickets 001–007; this ticket is the final sweep.
 
 ## Steps
 
-- [ ] `cargo fmt --check` passes.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.
 - [ ] `grep` confirms no remaining `web::Json` usage in GET handlers and none

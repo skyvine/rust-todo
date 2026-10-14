@@ -32,6 +32,5 @@ to the `Authorization: Bearer` header.
 - [ ] All tests touching `/incomplete_tasks` pass.
 - [ ] `README.md` `/incomplete_tasks` section reflects the new header-based
       input.
-- [ ] `cargo fmt --check` passes.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.

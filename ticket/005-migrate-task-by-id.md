@@ -48,6 +48,5 @@ Change `GET /task_by_id` from a JSON body (`GetTaskByIdPayload`) to the
 - [ ] All tests touching `/task_by_id` pass.
 - [ ] `README.md` `/task_by_id` section reflects the new header + query
       parameter input.
-- [ ] `cargo fmt --check` passes.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.

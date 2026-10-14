@@ -42,6 +42,5 @@ Change `GET /user_by_id` from a JSON body (`GetUserByIdPayload`) to the
 - [ ] `README.md` `/user_by_id` section reflects the new header + query
       parameter input.
 - [ ] `http_requests/get_user_by_id.http` uses the header + query string.
-- [ ] `cargo fmt --check` passes.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.

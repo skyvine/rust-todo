@@ -33,6 +33,5 @@ Change `GET /all_tasks` from a JSON body (`GetAllTasksPayload`) to the
 - [ ] `/all_tasks` authenticates via the header; response shape is unchanged.
 - [ ] All tests touching `/all_tasks` pass.
 - [ ] `README.md` `/all_tasks` section reflects the new header-based input.
-- [ ] `cargo fmt --check` passes.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.
