@@ -193,19 +193,14 @@ pub async fn get_all_tasks(auth_key: AuthKey) -> impl Responder {
     }
 }
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct GetIncompleteTasksPayload {
-    auth_key: String
-}
-
 #[get("/incomplete_tasks")]
-pub async fn get_incomplete_tasks(payload: actix_web::web::Json<GetIncompleteTasksPayload>) -> impl Responder {
+pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Incomplete Tasks", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
-            let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let user = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
@@ -1131,9 +1126,7 @@ mod tests {
         }).to_request();
         assert_response_success(test::call_service(&app, update_request).await, "Unable to mark second task completed.");
 
-        let get_tasks_request = test::TestRequest::get().uri("/incomplete_tasks").set_json(super::GetIncompleteTasksPayload {
-            auth_key: auth_key.clone()
-        }).to_request();
+        let get_tasks_request = test::TestRequest::get().uri("/incomplete_tasks").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get incomplete tasks!");
         let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
         assert_eq!(tasks.len(), 1, "Expected 1 incomplete task, found {}", tasks.len());
@@ -1471,9 +1464,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(*tasks[0].id(), task_id);
 
-        let incomplete_request = test::TestRequest::get().uri("/incomplete_tasks").set_json(super::GetIncompleteTasksPayload {
-            auth_key: grantee_key,
-        }).to_request();
+        let incomplete_request = test::TestRequest::get().uri("/incomplete_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
         let incomplete_response = assert_response_success(test::call_service(&app, incomplete_request).await, "list grantee incomplete tasks");
         let incomplete: Vec<Task> = extract_json_tasks(incomplete_response);
         assert_eq!(incomplete.len(), 1);

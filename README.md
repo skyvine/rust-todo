@@ -43,8 +43,8 @@ include a request\_id key which uniquely identifies the request.
   - Output keys:
     - tasks [array]: Tasks owned by the caller plus tasks shared with them.
 - /incomplete\_tasks: Retrieve all incomplete tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
   - Output keys:
     - tasks [array]: Incomplete tasks owned by the caller plus tasks shared with them.
 - /is\_alive: unconditionally returns an Ok status
