@@ -169,19 +169,14 @@ pub async fn logout(payload: actix_web::web::Json<LogoutPayload>) -> impl Respon
 
 // GET endpoints
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct GetAllTasksPayload {
-    auth_key: String
-}
-
 #[get("/all_tasks")]
-pub async fn get_all_tasks(payload: actix_web::web::Json<GetAllTasksPayload>) -> impl Responder {
+pub async fn get_all_tasks(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get All Tasks", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
-            let user = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let user = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
@@ -1106,9 +1101,7 @@ mod tests {
 
         assert_response_success(add_task(&app, &auth_key, "task 2", None).await, "Unable to add second task.");
 
-        let get_tasks_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
-            auth_key: auth_key.clone()
-        }).to_request();
+        let get_tasks_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get tasks!");
         let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
         assert_eq!(tasks.len(), 2, "Expected 2 tasks, found {}", tasks.len());
@@ -1472,9 +1465,7 @@ mod tests {
         assert_eq!(*task.id(), task_id);
 
         // ...and it shows up in their listings.
-        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
-            auth_key: grantee_key.clone(),
-        }).to_request();
+        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
@@ -1510,9 +1501,7 @@ mod tests {
         }).to_request();
         assert_response_success(test::call_service(&app, get_request).await, "read_write grantee should be able to get the task");
 
-        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
-            auth_key: grantee_key,
-        }).to_request();
+        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
@@ -1539,9 +1528,7 @@ mod tests {
         let get_response = test::call_service(&app, get_request).await;
         assert_eq!(get_response.status().as_u16(), 401);
 
-        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
-            auth_key: stranger_key,
-        }).to_request();
+        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {stranger_key}"))).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list stranger tasks");
         let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
         let tasks = body["tasks"].as_array().unwrap();
@@ -1573,9 +1560,7 @@ mod tests {
             .expect("insert stale share row");
         drop(connection);
 
-        let list_request = test::TestRequest::get().uri("/all_tasks").set_json(super::GetAllTasksPayload {
-            auth_key: owner_key.clone(),
-        }).to_request();
+        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
         let list_response = assert_response_success(test::call_service(&app, list_request).await, "list owner tasks");
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1, "Owner's task should appear exactly once even with a stale share row");
