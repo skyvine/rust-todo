@@ -79,14 +79,12 @@ impl ApplicationError {
 
 // Shared request extractors
 //
-// Nothing asks for these until the GET endpoints are migrated onto them, so
-// they read as dead code until then. Each `allow` goes away with the last
-// endpoint that needed it.
+// `/whoami` is the first endpoint to read the caller's key through the
+// `AuthKey` extractor instead of a JSON body; the rest follow as they migrate.
 
 /// The scheme an `Authorization` header must use to carry an auth key.
 const BEARER_SCHEME: &str = "Bearer";
 
-#[allow(dead_code)]
 impl AuthKey {
     /// Reads the key out of an `Authorization` header.
     ///
@@ -112,7 +110,6 @@ impl AuthKey {
 
 /// Turns a missing or malformed `Authorization` header into the same 401 an
 /// invalid key gets, so a client cannot tell the two apart.
-#[allow(dead_code)]
 fn unauthorized_error(request_id: Uuid) -> Error {
     // The header itself is deliberately not logged: it may hold a valid key.
     event!(Level::ERROR, "Missing or malformed Authorization header");
@@ -329,20 +326,15 @@ pub async fn get_user_by_id(payload: actix_web::web::Json<GetUserByIdPayload>) -
     }
 }
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct WhoAmIPayload {
-    auth_key: String
-}
-
 /// Returns the username of the currently logged in user.
 #[get("/whoami")]
-pub async fn whoami(payload: actix_web::web::Json<WhoAmIPayload>) -> impl Responder {
+pub async fn whoami(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
 
     match establish_connection() {
         Ok(mut conn) => 
-            match auth_key_to_user(&payload.auth_key, &mut conn) {
+            match auth_key_to_user(auth_key.as_str(), &mut conn) {
                 Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
                 Err(e) => {
                     event!(Level::ERROR, "Unable to look up user");
@@ -889,9 +881,7 @@ mod tests {
 
         let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
-        let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload {
-            auth_key,
-        }).to_request();
+        let whoami_request = test::TestRequest::get().uri("/whoami").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let whoami_response = assert_response_success(test::call_service(&app, whoami_request).await, "Whoami request failed.");
 
         let response_name = extract_json_string(whoami_response, "username");
@@ -921,7 +911,7 @@ mod tests {
         let logout_request = test::TestRequest::delete().uri("/logout").set_json(super::LogoutPayload { auth_key: auth_key.clone() }).to_request();
         assert_response_success(test::call_service(&app, logout_request).await, "Unable to log out.");
 
-        let whoami_request = test::TestRequest::get().uri("/whoami").set_json(super::WhoAmIPayload { auth_key }).to_request();
+        let whoami_request = test::TestRequest::get().uri("/whoami").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
         let whoami_response = test::call_service(&app, whoami_request).await;
         assert_eq!(whoami_response.status().as_u16(), 401, "WhoAmI did not return client error.");
     }

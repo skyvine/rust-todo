@@ -323,7 +323,7 @@ pub fn add_user(un: &Username, hashed_password: &String, connection: &mut PgConn
     }
 }
 
-pub fn auth_key_to_user(auth_key: &String, connection: &mut PgConnection) -> Result<User, ApplicationError> {
+pub fn auth_key_to_user(auth_key: &str, connection: &mut PgConnection) -> Result<User, ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
     use crate::schema::users::dsl::*;
 

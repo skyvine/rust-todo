@@ -61,8 +61,8 @@ include a request\_id key which uniquely identifies the request.
   - Output keys:
     - shares [array]: Each item has `username` [string] and `permission` [string] ("read" or "read\_write").
 - /whoami: Retrieves the username of the currently logged in user
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
   - Output keys:
     - username [string]: The name of the user associated with the auth\_key
 - /user\_by\_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
