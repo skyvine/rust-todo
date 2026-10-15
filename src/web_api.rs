@@ -98,7 +98,19 @@ impl AuthKey {
             .unwrap_or_default()
             .split_whitespace();
 
-        match (words.next(), words.next(), words.next()) {
+        let scheme = words.next();
+        let key = words.next();
+        let end = words.next();
+
+        if scheme.is_some() && scheme.unwrap().eq_ignore_ascii_case(BEARER_SCHEME) {
+            event!(Level::ERROR, "Incorrect scheme \"{:?}\"", scheme);
+        }
+
+        if end.is_some() {
+            event!(Level::ERROR, "Extra token after key: {:?}", end);
+        }
+
+        match (scheme, key, end) {
             // Schemes are case insensitive, so `bearer` is `Bearer` as well.
             (Some(scheme), Some(key), None) if scheme.eq_ignore_ascii_case(BEARER_SCHEME) => {
                 Ok(AuthKey::new(String::from(key)))
