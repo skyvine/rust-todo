@@ -157,20 +157,29 @@ fn unauthorized_error(request_id: Uuid) -> Error {
     .into()
 }
 
-/// Puts the Basic challenge on a 401 from `/login`.
+/// Puts a challenge on a 401, naming the scheme the client may retry with.
 ///
 /// RFC 9110 asks for a challenge on every 401 of a protected resource, whether
 /// the request arrived without credentials or with credentials which were
 /// refused. Any other status is handed back untouched, so the challenge never
 /// leaks onto a 400 or a 500.
-fn with_basic_challenge(mut response: HttpResponse) -> HttpResponse {
+fn with_challenge(mut response: HttpResponse, challenge: &'static str) -> HttpResponse {
     if response.status() == actix_web::http::StatusCode::UNAUTHORIZED {
         response.headers_mut().insert(
             actix_web::http::header::WWW_AUTHENTICATE,
-            actix_web::http::header::HeaderValue::from_static(LOGIN_BASIC_CHALLENGE),
+            actix_web::http::header::HeaderValue::from_static(challenge),
         );
     }
     response
+}
+
+/// Puts the Basic challenge on a 401 from `/login`.
+///
+/// `/login` is the only endpoint which takes credentials, so it is the only
+/// place the Basic scheme is ever offered: every other 401 names its own
+/// challenge at its call site instead of relying on this one replacing it.
+fn with_login_basic_challenge(response: HttpResponse) -> HttpResponse {
+    with_challenge(response, LOGIN_BASIC_CHALLENGE)
 }
 
 /// Turns a missing or malformed Basic `Authorization` header into the 401 that
@@ -186,7 +195,7 @@ fn unauthorized_basic_error(request_id: Uuid) -> Error {
     );
     InternalError::from_response(
         "Missing or malformed Basic Authorization header",
-        with_basic_challenge(HttpResponse::Unauthorized().json(error_body(request_id))),
+        with_login_basic_challenge(HttpResponse::Unauthorized().json(error_body(request_id))),
     )
     .into()
 }
@@ -648,7 +657,9 @@ pub async fn login(credentials: Credentials) -> impl Responder {
             let user = match get_user_by_name(&un, &mut conn) {
                 Ok(user) => user,
                 Err(e) => {
-                    return with_basic_challenge(e.into_http_response(&format!("{request_id}")));
+                    return with_login_basic_challenge(
+                        e.into_http_response(&format!("{request_id}")),
+                    );
                 }
             };
 
@@ -666,7 +677,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
 
             match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
                 Ok(auth_key) => HttpResponse::Ok().json(json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")})),
-                Err(e) => with_basic_challenge(e.into_http_response(&format!("{request_id}"))),
+                Err(e) => with_login_basic_challenge(e.into_http_response(&format!("{request_id}"))),
             }
         }
         Err(e) => {
