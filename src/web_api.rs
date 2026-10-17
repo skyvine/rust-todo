@@ -479,10 +479,9 @@ pub async fn get_user_by_id(
             };
 
             match crate::core::get_user_by_id(&query.id, &mut connection) {
-                Ok(user) => HttpResponse::Ok().body(format!(
-                    "{}",
-                    json!({"request_id": format!("{request_id}"), "username": user.ref_username()})
-                )),
+                Ok(user) => HttpResponse::Ok().json(
+                    json!({"request_id": format!("{request_id}"), "username": user.ref_username()}),
+                ),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
