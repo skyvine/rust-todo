@@ -39,10 +39,10 @@ impl Credentials {
     ///
     /// The fields are emptied rather than moved out, so that the zeroizing
     /// `Drop` impl still has a well defined struct to work on.
-    pub(crate) fn into_parts(mut self) -> (String, String) {
+    pub(crate) fn into_parts(mut self) -> (String, CleartextPassword) {
         (
             std::mem::take(&mut self.username),
-            std::mem::take(&mut self.password),
+            CleartextPassword::new(std::mem::take(&mut self.password)),
         )
     }
 }

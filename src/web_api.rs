@@ -504,7 +504,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
 
-    let (raw_username, raw_password) = credentials.into_parts();
+    let (raw_username, pw) = credentials.into_parts();
 
     let un = match Username::new(raw_username) {
         Ok(un) => un,
@@ -513,8 +513,6 @@ pub async fn login(credentials: Credentials) -> impl Responder {
             return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
         }
     };
-
-    let pw = CleartextPassword::new(raw_password);
 
     match establish_connection() {
         Ok(mut conn) => {
