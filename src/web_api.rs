@@ -899,14 +899,12 @@ pub async fn unshare_task(auth_key: AuthKey, mut payload: actix_web::web::Json<U
 mod tests {
     use crate::{build_app, core::Task};
     use actix_http::Request;
-    use actix_web::get;
     use actix_web::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
-    use actix_web::{App, Error, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
+    use actix_web::{App, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
     use serde::Deserialize;
     use tracing_subscriber::{EnvFilter, fmt};
-    use uuid::Uuid;
 
     #[ctor]
     unsafe fn global_init() {
