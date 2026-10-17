@@ -140,7 +140,12 @@ impl AuthKey {
 /// invalid key gets, so a client cannot tell the two apart.
 fn unauthorized_error(request_id: Uuid) -> Error {
     // The header itself is deliberately not logged: it may hold a valid key.
-    event!(Level::ERROR, "Missing or malformed Authorization header");
+    // The id is logged because the handler never runs, so no span carries it.
+    event!(
+        Level::ERROR,
+        %request_id,
+        "Missing or malformed Authorization header"
+    );
     InternalError::from_response(
         "Missing or malformed Authorization header",
         HttpResponse::Unauthorized().json(error_body(request_id)),
@@ -169,8 +174,10 @@ fn with_basic_challenge(mut response: HttpResponse) -> HttpResponse {
 /// challenge which tells the client which scheme to retry with.
 fn unauthorized_basic_error(request_id: Uuid) -> Error {
     // The header itself is deliberately not logged: it carries the password.
+    // The id is logged because the handler never runs, so no span carries it.
     event!(
         Level::ERROR,
+        %request_id,
         "Missing or malformed Basic Authorization header"
     );
     InternalError::from_response(
@@ -260,7 +267,12 @@ impl FromRequest for Credentials {
 /// Registered app-wide in `build_app!` as the `QueryConfig` error handler.
 pub fn query_error_handler(err: QueryPayloadError, _req: &HttpRequest) -> Error {
     let request_id = Uuid::new_v4();
-    event!(Level::ERROR, "Unable to read the query string: {err}");
+    // The id is logged because the handler never runs, so no span carries it.
+    event!(
+        Level::ERROR,
+        %request_id,
+        "Unable to read the query string: {err}"
+    );
     InternalError::from_response(err, HttpResponse::BadRequest().json(error_body(request_id)))
         .into()
 }
@@ -273,6 +285,7 @@ pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> Error {
     let request_id = Uuid::new_v4();
     event!(
         Level::ERROR,
+        %request_id,
         "Unable to read the request body as JSON: {err}"
     );
     InternalError::from_response(err, HttpResponse::BadRequest().json(error_body(request_id)))
