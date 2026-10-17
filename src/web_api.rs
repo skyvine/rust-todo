@@ -48,7 +48,11 @@ fn error_body_with_message(
 }
 
 impl ApplicationError {
-    fn into_http_response(self, request_id: &String) -> HttpResponse {
+    /// The status and body this error becomes, with no challenge attached.
+    ///
+    /// Every endpoint answers an error the same way; only the protection space
+    /// the request was made in decides the challenge a 401 carries.
+    fn into_status_response(self, request_id: &String) -> HttpResponse {
         match self {
             ApplicationError::DieselError(e) => {
                 event!(Level::ERROR, "Diesel error: {e}");
@@ -82,6 +86,33 @@ impl ApplicationError {
             ApplicationError::UserExists => HttpResponse::Conflict().json(error_body(request_id)),
         }
     }
+
+    /// The challenge which a 401 from a Bearer-protected endpoint answers
+    /// with: the bearer scheme, naming the realm.
+    ///
+    /// Only a 401 carries a challenge — [`with_challenge`] hands every other
+    /// status back untouched — and RFC 9110 asks for nothing beyond the
+    /// scheme and realm, so that is the whole answer.
+    fn bearer_challenge(&self) -> &'static str {
+        BEARER_CHALLENGE
+    }
+
+    /// The response for an error on a Bearer-protected endpoint: the status
+    /// and body every endpoint shares, plus the bearer challenge on a 401.
+    fn into_http_response(self, request_id: &String) -> HttpResponse {
+        let challenge = self.bearer_challenge();
+        with_challenge(self.into_status_response(request_id), challenge)
+    }
+
+    /// The response for an error on `/login`: the same status and body, with
+    /// the Basic challenge on a 401 instead.
+    ///
+    /// `/login` is the only endpoint which takes credentials, so this is the
+    /// only place the Basic scheme is offered: a 401 anywhere else answers
+    /// with a bearer challenge.
+    fn into_login_http_response(self, request_id: &String) -> HttpResponse {
+        with_login_basic_challenge(self.into_status_response(request_id))
+    }
 }
 
 // Shared request extractors
@@ -100,6 +131,11 @@ const BASIC_SCHEME: &str = "Basic";
 /// allowed value is UTF-8: that is the encoding this server reads credentials
 /// as.
 const LOGIN_BASIC_CHALLENGE: &str = "Basic realm=\"todo\", charset=\"UTF-8\"";
+
+/// The challenge which every 401 from a Bearer-protected endpoint carries,
+/// naming the same realm as [`LOGIN_BASIC_CHALLENGE`]: the whole API is one
+/// protection space, only the scheme which guards it differs.
+const BEARER_CHALLENGE: &str = "Bearer realm=\"todo\"";
 
 /// The challenge for a request whose `Authorization` header was missing or
 /// malformed, so no auth key ever reached the server to be judged.
@@ -667,9 +703,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
             let user = match get_user_by_name(&un, &mut conn) {
                 Ok(user) => user,
                 Err(e) => {
-                    return with_login_basic_challenge(
-                        e.into_http_response(&format!("{request_id}")),
-                    );
+                    return e.into_login_http_response(&format!("{request_id}"));
                 }
             };
 
@@ -687,7 +721,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
 
             match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
                 Ok(auth_key) => HttpResponse::Ok().json(json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")})),
-                Err(e) => with_login_basic_challenge(e.into_http_response(&format!("{request_id}"))),
+                Err(e) => e.into_login_http_response(&format!("{request_id}")),
             }
         }
         Err(e) => {
