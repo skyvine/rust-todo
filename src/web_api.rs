@@ -196,8 +196,6 @@ impl AuthKey {
     }
 }
 
-/// Turns a missing or malformed `Authorization` header into the same 401 an
-/// invalid key gets, so a client cannot tell the two apart.
 fn unauthorized_error(request_id: Uuid) -> Error {
     // The header itself is deliberately not logged: it may hold a valid key.
     // The id is logged because the handler never runs, so no span carries it.
