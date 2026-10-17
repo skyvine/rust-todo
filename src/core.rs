@@ -500,7 +500,7 @@ pub fn get_user_by_name(un: &Username, connection: &mut PgConnection) -> Result<
     }
 }
 
-pub fn logout(auth_key: &String, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+pub fn logout(auth_key: &str, connection: &mut PgConnection) -> Result<(), ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
 
     let query = diesel::delete(auth_keys.filter(key.eq(auth_key)));

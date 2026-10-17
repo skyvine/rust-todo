@@ -152,19 +152,14 @@ pub fn query_error_handler(err: QueryPayloadError, _req: &HttpRequest) -> Error 
 
 // DELETE endpoints
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct LogoutPayload {
-    auth_key: String,
-}
-
 #[delete("/logout")]
-pub async fn logout(payload: actix_web::web::Json<LogoutPayload>) -> impl Responder {
+pub async fn logout(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Logout", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
-            match crate::core::logout(&payload.auth_key, &mut connection) {
+            match crate::core::logout(auth_key.as_str(), &mut connection) {
                 Ok(()) => HttpResponse::Ok().finish(),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
@@ -907,7 +902,7 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
         
-        let logout_request = test::TestRequest::delete().uri("/logout").set_json(super::LogoutPayload { auth_key: auth_key.clone() }).to_request();
+        let logout_request = test::TestRequest::delete().uri("/logout").insert_header((AUTHORIZATION, format!("bearer {auth_key}"))).to_request();
         assert_response_success(test::call_service(&app, logout_request).await, "Unable to log out.");
 
         let whoami_request = test::TestRequest::get().uri("/whoami").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
