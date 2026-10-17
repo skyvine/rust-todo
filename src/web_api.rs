@@ -438,10 +438,8 @@ pub async fn get_task_shares(
                     let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
                         json!({"username": s.username(), "permission": s.permission().as_stored_text()})
                     }).collect();
-                    HttpResponse::Ok().body(format!(
-                        "{}",
-                        json!({"request_id": format!("{request_id}"), "shares": shares})
-                    ))
+                    HttpResponse::Ok()
+                        .json(json!({"request_id": format!("{request_id}"), "shares": shares}))
                 }
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
