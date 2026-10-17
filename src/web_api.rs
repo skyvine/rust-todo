@@ -365,10 +365,8 @@ pub async fn get_task_by_id(
             match get_task_permission(&user, &query.id, &mut connection) {
                 Ok(Permission::Owner) | Ok(Permission::ReadOnly) | Ok(Permission::ReadWrite) => {
                     match crate::core::get_task_by_id(&query.id, &mut connection) {
-                        Ok(task) => HttpResponse::Ok().body(format!(
-                            "{}",
-                            json!({"request_id": format!("{request_id}"), "task": task})
-                        )),
+                        Ok(task) => HttpResponse::Ok()
+                            .json(json!({"request_id": format!("{request_id}"), "task": task})),
                         Err(e) => e.into_http_response(&format!("{request_id}")),
                     }
                 }
