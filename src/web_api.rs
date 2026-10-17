@@ -905,6 +905,7 @@ mod tests {
     use ctor::ctor;
     use serde::Deserialize;
     use tracing_subscriber::{EnvFilter, fmt};
+    use uuid::Uuid;
 
     #[ctor]
     unsafe fn global_init() {
@@ -974,6 +975,17 @@ mod tests {
             "{message}"
         );
     }
+
+    /// Asserts the response carries the API's standard error body: a JSON
+    /// object holding the id of the request that failed.
+    fn assert_json_error_with_request_id(response: ServiceResponse) {
+        let request_id = extract_json_string(response, "request_id");
+        assert!(
+            Uuid::parse_str(&request_id).is_ok(),
+            "{request_id:?} is not a request id."
+        );
+    }
+
 
     async fn register_and_login<E: std::fmt::Debug>(
         app: impl Service<Request, Response = ServiceResponse, Error = E>,
