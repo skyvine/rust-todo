@@ -959,7 +959,10 @@ pub async fn update_task_by_id(
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
-                        HttpResponse::Unauthorized().json(error_body(request_id))
+                        with_challenge(
+                            HttpResponse::Unauthorized().json(error_body(request_id)),
+                            BEARER_CHALLENGE,
+                        )
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
