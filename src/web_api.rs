@@ -484,7 +484,6 @@ pub async fn whoami(auth_key: AuthKey) -> impl Responder {
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct AddTaskPayload {
-    auth_key: String,
     title: String,
     description: Option<String>,
 }
@@ -493,7 +492,7 @@ struct AddTaskPayload {
 ///
 /// "Completed" defaults to "false"
 #[post("/add_task")]
-pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
+pub async fn add_task(auth_key: AuthKey, mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
 
@@ -509,7 +508,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
 
     match establish_connection() {
         Ok(mut connection) => {
-            let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
+            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
@@ -1027,10 +1026,10 @@ mod tests {
         let request = test::TestRequest::post()
             .uri("/add_task")
             .set_json(super::AddTaskPayload {
-                auth_key: String::from(auth_key),
                 title: String::from(title),
                 description: description.map(String::from),
             })
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         test::call_service(app, request).await
     }
