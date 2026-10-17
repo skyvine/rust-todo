@@ -857,6 +857,8 @@ struct UnshareTaskPayload {
     username: String,
 }
 
+// DELETE endpoints
+
 /// Removes another user's access to a task owned by the caller.
 #[delete("/unshare_task")]
 pub async fn unshare_task(auth_key: AuthKey, mut payload: actix_web::web::Json<UnshareTaskPayload>) -> impl Responder {
