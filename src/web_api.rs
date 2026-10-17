@@ -1093,17 +1093,30 @@ mod tests {
         }
     }
 
+    /// Asserts that a response carries exactly one challenge, the one named,
+    /// and no other.
+    ///
+    /// Only one challenge may be sent per header field, so a client which
+    /// found a second one would have no way to tell which scheme to retry
+    /// with: the Basic challenge must not reach an endpoint which takes an
+    /// auth key, nor the bearer challenge reach `/login`.
+    fn assert_only_challenge(response: &ServiceResponse, expected: &str, message: &str) {
+        let challenges: Vec<&str> = response
+            .headers()
+            .get_all(WWW_AUTHENTICATE)
+            .map(|value| {
+                value
+                    .to_str()
+                    .expect("a challenge should be ASCII, as every scheme is")
+            })
+            .collect();
+        assert_eq!(challenges, vec![expected], "{message}");
+    }
+
     /// Asserts that a 401 carries the challenge a Basic client needs in order
     /// to know what to retry with.
     fn assert_basic_challenge(response: &ServiceResponse, message: &str) {
-        assert_eq!(
-            response
-                .headers()
-                .get(WWW_AUTHENTICATE)
-                .and_then(|value| value.to_str().ok()),
-            Some(super::LOGIN_BASIC_CHALLENGE),
-            "{message}"
-        );
+        assert_only_challenge(response, super::LOGIN_BASIC_CHALLENGE, message);
     }
 
     /// Asserts the response carries the API's standard error body: a JSON
@@ -1409,6 +1422,109 @@ mod tests {
         assert!(
             response.headers().get(WWW_AUTHENTICATE).is_none(),
             "A 404 must not carry the Basic challenge, which belongs to 401s."
+        );
+    }
+
+    #[actix_web::test]
+    async fn bearer_endpoints_challenge_a_missing_or_malformed_header() {
+        let app = test::init_service(build_app!()).await;
+
+        // No Authorization header at all: no auth key reached the server to be
+        // judged, so the challenge names the request itself as what to fix.
+        let request = test::TestRequest::get().uri("/whoami").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "/whoami without an Authorization header did not return 401."
+        );
+        assert_only_challenge(
+            &response,
+            super::BEARER_INVALID_REQUEST_CHALLENGE,
+            "A missing header got no challenge naming the bearer scheme.",
+        );
+
+        // A malformed header is rejected by the extractor, so it never reaches
+        // a handler and is answered the same way as a missing one.
+        for header_value in [
+            "Basic some-auth-key",      // wrong scheme
+            "some-auth-key",            // no scheme at all
+            "Bearer",                   // no key
+            "Bearer some-auth-key and", // trailing word
+        ] {
+            let request = test::TestRequest::get()
+                .uri("/whoami")
+                .insert_header((AUTHORIZATION, header_value))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(
+                response.status().as_u16(),
+                401,
+                "/whoami with {header_value:?} did not return 401."
+            );
+            assert_only_challenge(
+                &response,
+                super::BEARER_INVALID_REQUEST_CHALLENGE,
+                &format!("A malformed header {header_value:?} got no challenge."),
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn bearer_endpoints_challenge_a_refused_auth_key() {
+        let app = test::init_service(build_app!()).await;
+
+        // A well-formed header naming a key which is unknown or expired: the
+        // key was presented and then refused, so the client needs a new one.
+        let request = test::TestRequest::get()
+            .uri("/whoami")
+            .insert_header((AUTHORIZATION, "Bearer this-is-not-a-valid-auth-key"))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "/whoami with an unknown auth key did not return 401."
+        );
+        assert_only_challenge(
+            &response,
+            super::BEARER_INVALID_TOKEN_CHALLENGE,
+            "A refused auth key got no challenge telling the client to get new credentials.",
+        );
+    }
+
+    #[actix_web::test]
+    async fn bearer_endpoints_challenge_a_caller_without_access() {
+        let owner_username = "challenged-owner-username";
+        let stranger_username = "challenged-stranger-username";
+        let password = "challenged-password";
+        let app = test::init_service(build_app!()).await;
+
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "private task", None).await,
+            "add task",
+        );
+        let task_id = extract_json_i32(add_response, "task_id");
+
+        let stranger_key = register_and_login(&app, stranger_username, password).await;
+        let request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "Reading someone else's task did not return 401."
+        );
+        // The key was accepted, so no error code applies: the realm alone says
+        // which protection space the client was turned away from. A 403 with
+        // `insufficient_scope` replaces this answer in ticket 003.
+        assert_only_challenge(
+            &response,
+            super::BEARER_CHALLENGE,
+            "A caller without access got no challenge naming the realm.",
         );
     }
 
