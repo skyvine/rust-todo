@@ -119,11 +119,15 @@ impl AuthKey {
         let end = words.next();
 
         if scheme.is_some() && !scheme.unwrap().eq_ignore_ascii_case(BEARER_SCHEME) {
-            event!(Level::ERROR, "Incorrect scheme \"{:?}\"", scheme);
+            event!(
+                Level::ERROR,
+                %request_id,
+                "Incorrect scheme \"{:?}\"", scheme
+            );
         }
 
         if end.is_some() {
-            event!(Level::ERROR, "Extra token after key: {:?}", end);
+            event!(Level::ERROR, %request_id, "Extra token after key: {:?}", end);
         }
 
         match (scheme, key, end) {
@@ -218,11 +222,19 @@ impl Credentials {
         let end = words.next();
 
         if scheme.is_some() && !scheme.unwrap().eq_ignore_ascii_case(BASIC_SCHEME) {
-            event!(Level::ERROR, "Incorrect scheme \"{:?}\"", scheme);
+            event!(
+                Level::ERROR,
+                %request_id,
+                "Incorrect scheme \"{:?}\"", scheme
+            );
         }
 
         if end.is_some() {
-            event!(Level::ERROR, "Extra token after credentials: {:?}", end);
+            event!(
+                Level::ERROR,
+                %request_id,
+                "Extra token after credentials: {:?}", end
+            );
         }
 
         match (scheme, encoded, end) {
