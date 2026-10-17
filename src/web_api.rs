@@ -51,7 +51,7 @@ impl ApplicationError {
     /// The status and body this error becomes, with no challenge attached.
     ///
     /// Every endpoint answers an error the same way; only the protection space
-    /// the request was made in decides the challenge a 401 carries.
+    /// the request was made in decides the challenge a 401 or a 403 carries.
     fn into_status_response(self, request_id: &String) -> HttpResponse {
         match self {
             ApplicationError::DieselError(e) => {
@@ -79,6 +79,10 @@ impl ApplicationError {
                 event!(Level::ERROR, "Query failed: {e}");
                 HttpResponse::InternalServerError().json(error_body(request_id))
             }
+            ApplicationError::Forbidden => {
+                event!(Level::ERROR, "Forbidden");
+                HttpResponse::Forbidden().json(error_body(request_id))
+            }
             ApplicationError::Unauthorized => {
                 event!(Level::ERROR, "Unauthorized");
                 HttpResponse::Unauthorized().json(error_body(request_id))
@@ -87,24 +91,28 @@ impl ApplicationError {
         }
     }
 
-    /// The challenge which a 401 from a Bearer-protected endpoint answers
-    /// with: the bearer scheme, naming the realm, plus the RFC 6750 §3.1 error
-    /// code for the failure when there is one.
+    /// The challenge which a 401 or a 403 from a Bearer-protected endpoint
+    /// answers with: the bearer scheme, naming the realm, plus the RFC 6750
+    /// §3.1 error code for the failure when there is one.
     ///
-    /// Only a 401 carries a challenge — [`with_challenge`] hands every other
-    /// status back untouched — and RFC 9110 asks for nothing beyond the
+    /// Only a 401 and a 403 carry a challenge — [`with_challenge`] hands every
+    /// other status back untouched — and RFC 9110 asks for nothing beyond the
     /// scheme and realm, so that is the whole answer by default.
     fn bearer_challenge(&self) -> &'static str {
         match self {
             // An auth key was presented and then refused, so RFC 6750 §3.1
             // calls this `invalid_token`: the client needs new credentials.
             ApplicationError::InvalidAuthKey => BEARER_INVALID_TOKEN_CHALLENGE,
+            // The auth key was accepted and the request still may not be
+            // fulfilled, so RFC 6750 §3.1 calls this `insufficient_scope`.
+            ApplicationError::Forbidden => BEARER_INSUFFICIENT_SCOPE_CHALLENGE,
             _ => BEARER_CHALLENGE,
         }
     }
 
     /// The response for an error on a Bearer-protected endpoint: the status
-    /// and body every endpoint shares, plus the bearer challenge on a 401.
+    /// and body every endpoint shares, plus the bearer challenge on a 401 or
+    /// a 403.
     fn into_http_response(self, request_id: &String) -> HttpResponse {
         let challenge = self.bearer_challenge();
         with_challenge(self.into_status_response(request_id), challenge)
@@ -138,9 +146,10 @@ const BASIC_SCHEME: &str = "Basic";
 /// as.
 const LOGIN_BASIC_CHALLENGE: &str = "Basic realm=\"todo\", charset=\"UTF-8\"";
 
-/// The challenge which every 401 from a Bearer-protected endpoint carries,
-/// naming the same realm as [`LOGIN_BASIC_CHALLENGE`]: the whole API is one
-/// protection space, only the scheme which guards it differs.
+/// The challenge which a 401 or a 403 from a Bearer-protected endpoint falls
+/// back to when no RFC 6750 error code applies, naming the same realm as
+/// [`LOGIN_BASIC_CHALLENGE`]: the whole API is one protection space, only the
+/// scheme which guards it differs.
 const BEARER_CHALLENGE: &str = "Bearer realm=\"todo\"";
 
 /// The challenge for a request whose `Authorization` header was missing or
@@ -156,6 +165,16 @@ const BEARER_INVALID_REQUEST_CHALLENGE: &str = "Bearer realm=\"todo\", error=\"i
 /// RFC 6750 §3.1 calls this `invalid_token`, and its advice is to get new
 /// credentials.
 const BEARER_INVALID_TOKEN_CHALLENGE: &str = "Bearer realm=\"todo\", error=\"invalid_token\"";
+
+/// The challenge for a request whose auth key was accepted but which asks for
+/// more than that user may have: someone else's task, or a task the caller
+/// may only read.
+///
+/// RFC 6750 §3.1 calls this `insufficient_scope`, and its advice is to ask for
+/// more scope, not to authenticate again — retrying with another key would
+/// fail the same way.
+const BEARER_INSUFFICIENT_SCOPE_CHALLENGE: &str =
+    "Bearer realm=\"todo\", error=\"insufficient_scope\"";
 
 impl AuthKey {
     /// Reads the key out of an `Authorization` header.
@@ -214,14 +233,22 @@ fn unauthorized_error(request_id: Uuid) -> Error {
     .into()
 }
 
-/// Puts a challenge on a 401, naming the scheme the client may retry with.
+/// Puts a challenge on a 401 or a 403, naming the scheme the client may retry
+/// with.
 ///
 /// RFC 9110 asks for a challenge on every 401 of a protected resource, whether
 /// the request arrived without credentials or with credentials which were
-/// refused. Any other status is handed back untouched, so the challenge never
-/// leaks onto a 400 or a 500.
+/// refused. A 403 in a Bearer-protected endpoint carries one too: RFC 9110
+/// §15.5.4 lets an origin server that wants to be clear that authentication
+/// succeeded and the request was still refused say so in this header, and RFC
+/// 6750 §3 supplies `insufficient_scope` for exactly that case. Any other
+/// status is handed back untouched, so the challenge never leaks onto a 400 or
+/// a 500.
 fn with_challenge(mut response: HttpResponse, challenge: &'static str) -> HttpResponse {
-    if response.status() == actix_web::http::StatusCode::UNAUTHORIZED {
+    if matches!(
+        response.status(),
+        actix_web::http::StatusCode::UNAUTHORIZED | actix_web::http::StatusCode::FORBIDDEN
+    ) {
         response.headers_mut().insert(
             actix_web::http::header::WWW_AUTHENTICATE,
             actix_web::http::header::HeaderValue::from_static(challenge),
@@ -233,8 +260,8 @@ fn with_challenge(mut response: HttpResponse, challenge: &'static str) -> HttpRe
 /// Puts the Basic challenge on a 401 from `/login`.
 ///
 /// `/login` is the only endpoint which takes credentials, so it is the only
-/// place the Basic scheme is ever offered: every other 401 names its own
-/// challenge at its call site instead of relying on this one replacing it.
+/// place the Basic scheme is ever offered: every other challenge names its own
+/// scheme at its call site instead of relying on this one replacing it.
 fn with_login_basic_challenge(response: HttpResponse) -> HttpResponse {
     with_challenge(response, LOGIN_BASIC_CHALLENGE)
 }
@@ -477,7 +504,7 @@ pub async fn get_task_by_id(
             };
 
             // Owner, read-only, and read-write share holders may all view
-            // the task; anyone else gets the same 401.
+            // the task; anyone else gets the same 403.
             match get_task_permission(&user, &query.id, &mut connection) {
                 Ok(Permission::Owner) | Ok(Permission::ReadOnly) | Ok(Permission::ReadWrite) => {
                     match crate::core::get_task_by_id(&query.id, &mut connection) {
@@ -493,21 +520,15 @@ pub async fn get_task_by_id(
                         query.id,
                         user.ref_id()
                     );
-                    with_challenge(
-                        HttpResponse::Unauthorized().json(error_body(request_id)),
-                        BEARER_CHALLENGE,
-                    )
+                    ApplicationError::Forbidden.into_http_response(&format!("{request_id}"))
                 }
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
-                    // task": both are the same 401 to avoid leaking which
+                    // task": both are the same 403 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot get task {}: not found", query.id);
-                        with_challenge(
-                            HttpResponse::Unauthorized().json(error_body(request_id)),
-                            BEARER_CHALLENGE,
-                        )
+                        ApplicationError::Forbidden.into_http_response(&format!("{request_id}"))
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
@@ -859,8 +880,8 @@ pub async fn share_task(
 
             match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
                 Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
-                // Unauthorized covers both "task doesn't exist" and "not
-                // your task", so the 401 doesn't reveal which.
+                // Forbidden covers both "task doesn't exist" and "not your
+                // task", so the 403 doesn't reveal which.
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -953,14 +974,11 @@ pub async fn update_task_by_id(
                 Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
-                    // task": both are the same 401 to avoid leaking which
+                    // task": both are the same 403 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
-                        with_challenge(
-                            HttpResponse::Unauthorized().json(error_body(request_id)),
-                            BEARER_CHALLENGE,
-                        )
+                        ApplicationError::Forbidden.into_http_response(&format!("{request_id}"))
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
@@ -1117,6 +1135,29 @@ mod tests {
         assert_only_challenge(response, super::LOGIN_BASIC_CHALLENGE, message);
     }
 
+    /// Asserts that a 403 names the reason the credentials were accepted and
+    /// the request still refused, rather than asking for a new auth key.
+    fn assert_insufficient_scope_challenge(response: &ServiceResponse, message: &str) {
+        assert_only_challenge(
+            response,
+            super::BEARER_INSUFFICIENT_SCOPE_CHALLENGE,
+            message,
+        );
+    }
+
+    /// Asserts that a 403 says nothing should be retried with other
+    /// credentials, since another auth key would be refused the same way.
+    fn assert_forbidden(response: &ServiceResponse, message: &str) {
+        assert_eq!(response.status().as_u16(), 403, "{message}");
+        assert_insufficient_scope_challenge(response, message);
+    }
+
+    /// Asserts that a 401 asks the client to authenticate, rather than
+    /// pretending its credentials were good but insufficient.
+    fn assert_unauthorized(response: &ServiceResponse, message: &str) {
+        assert_eq!(response.status().as_u16(), 401, "{message}");
+    }
+
     /// Asserts the response carries the API's standard error body: a JSON
     /// object holding the id of the request that failed.
     fn assert_json_error_with_request_id(response: ServiceResponse) {
@@ -1252,6 +1293,25 @@ mod tests {
             Some(s) => String::from(s),
             None => panic!("{} is not a string! {:?}", key, v),
         })
+    }
+
+    /// The keys of a response's JSON object, so two error bodies can be
+    /// compared for shape.
+    ///
+    /// The `request_id` differs from request to request by design, so comparing
+    /// bodies verbatim would compare nothing useful: what must match is the
+    /// set of keys, which is what tells a client how to read the failure.
+    fn json_body_keys(response: ServiceResponse) -> Vec<String> {
+        let bytes = response
+            .into_body()
+            .try_into_bytes()
+            .expect("Unable to extract bytes from response");
+        let body: serde_json::Value = serde_json::from_slice(bytes.as_ref())
+            .unwrap_or_else(|_| panic!("Unable to deserialize alleged JSON: {bytes:?}"));
+        match body.as_object() {
+            Some(object) => object.keys().cloned().collect(),
+            None => panic!("{body} is not a JSON object!"),
+        }
     }
 
     #[actix_web::test]
@@ -1513,16 +1573,15 @@ mod tests {
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
-            401,
-            "Reading someone else's task did not return 401."
+            403,
+            "Reading someone else's task did not return 403."
         );
-        // The key was accepted, so no error code applies: the realm alone says
-        // which protection space the client was turned away from. A 403 with
-        // `insufficient_scope` replaces this answer in ticket 003.
-        assert_only_challenge(
+        // The key was accepted, so the challenge names the reason the request
+        // was refused rather than asking for a new key: another one would be
+        // refused the same way.
+        assert_insufficient_scope_challenge(
             &response,
-            super::BEARER_CHALLENGE,
-            "A caller without access got no challenge naming the realm.",
+            "A caller without access got no insufficient_scope challenge.",
         );
     }
 
@@ -1598,7 +1657,17 @@ mod tests {
             Some("test description"),
         )
         .await;
-        assert_client_error(response, "Response did not indicate client failure");
+        // A key which is unknown or expired is an authentication failure, not
+        // an authorization one, so this stays a 401 that asks for a new key.
+        assert_unauthorized(
+            &response,
+            "Adding a task with an unknown auth key did not return 401.",
+        );
+        assert_only_challenge(
+            &response,
+            super::BEARER_INVALID_TOKEN_CHALLENGE,
+            "An unknown auth key got no challenge telling the client to get new credentials.",
+        );
     }
 
     #[actix_web::test]
@@ -1657,9 +1726,9 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {non_owner_auth_key}")))
             .to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
-        assert!(
-            get_task_response.status().is_client_error(),
-            "Getting task did not indicate client error."
+        assert_forbidden(
+            &get_task_response,
+            "Reading a task you hold no share on should be a 403.",
         );
     }
 
@@ -1676,11 +1745,11 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
-        // A missing task must look the same as a task owned by someone else: 401, not 404.
-        assert_eq!(
-            get_task_response.status().as_u16(),
-            401,
-            "Getting a nonexistent task should not reveal its nonexistence."
+        // A missing task must look the same as a task owned by someone else:
+        // 403, not 404.
+        assert_forbidden(
+            &get_task_response,
+            "Getting a nonexistent task should not reveal its nonexistence.",
         );
     }
 
@@ -1732,10 +1801,9 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let update_response = test::call_service(&app, update_request).await;
-        assert_eq!(
-            update_response.status().as_u16(),
-            401,
-            "Updating a nonexistent task should not reveal its nonexistence."
+        assert_forbidden(
+            &update_response,
+            "Updating a nonexistent task should not reveal its nonexistence.",
         );
     }
 
@@ -2021,6 +2089,39 @@ mod tests {
         test::call_service(app, request).await
     }
 
+    async fn get_task(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        id: i32,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        test::call_service(app, request).await
+    }
+
+    async fn set_task_completed(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        id: i32,
+        completed: bool,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::patch()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id,
+                updates: super::TaskUpdates {
+                    completed: Some(completed),
+                    title: None,
+                    description: None,
+                },
+            })
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        test::call_service(app, request).await
+    }
+
     #[actix_web::test]
     async fn owner_can_share_and_see_share_listed() {
         let owner_username = "share-list-owner-username";
@@ -2106,26 +2207,17 @@ mod tests {
             assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_eq!(
-            share_task(&app, &non_owner_key, task_id, non_owner_username, "read")
-                .await
-                .status()
-                .as_u16(),
-            401
+        assert_forbidden(
+            &share_task(&app, &non_owner_key, task_id, non_owner_username, "read").await,
+            "Sharing someone else's task should be a 403.",
         );
-        assert_eq!(
-            unshare_task(&app, &non_owner_key, task_id, non_owner_username)
-                .await
-                .status()
-                .as_u16(),
-            401
+        assert_forbidden(
+            &unshare_task(&app, &non_owner_key, task_id, non_owner_username).await,
+            "Unsharing someone else's task should be a 403.",
         );
-        assert_eq!(
-            get_task_shares(&app, &non_owner_key, task_id)
-                .await
-                .status()
-                .as_u16(),
-            401
+        assert_forbidden(
+            &get_task_shares(&app, &non_owner_key, task_id).await,
+            "Listing the shares on someone else's task should be a 403.",
         );
     }
 
@@ -2191,7 +2283,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn missing_task_returns_same_401_as_not_owned() {
+    async fn missing_task_returns_same_403_as_not_owned() {
         let owner_username = "oracle-owner-username";
         let other_username = "oracle-other-username";
         let password = "oracle-password";
@@ -2208,18 +2300,71 @@ mod tests {
         let not_owned = share_task(&app, &other_key, task_id, other_username, "read").await;
         // Anyone trying to manage a missing task
         let missing = share_task(&app, &owner_key, -1, other_username, "read").await;
-        assert_eq!(not_owned.status().as_u16(), 401);
-        assert_eq!(missing.status().as_u16(), 401);
+        assert_forbidden(&not_owned, "Sharing someone else's task should be a 403.");
+        assert_forbidden(&missing, "Sharing a missing task should be a 403.");
+        assert_eq!(
+            json_body_keys(missing),
+            json_body_keys(not_owned),
+            "A missing task must be reported with the same body shape as one that is not yours."
+        );
 
         let not_owned_list = get_task_shares(&app, &other_key, task_id).await;
         let missing_list = get_task_shares(&app, &owner_key, -1).await;
-        assert_eq!(not_owned_list.status().as_u16(), 401);
-        assert_eq!(missing_list.status().as_u16(), 401);
+        assert_forbidden(
+            &not_owned_list,
+            "Listing shares on someone else's task should be a 403.",
+        );
+        assert_forbidden(
+            &missing_list,
+            "Listing shares on a missing task should be a 403.",
+        );
+        assert_eq!(
+            json_body_keys(missing_list),
+            json_body_keys(not_owned_list),
+            "A missing task must be reported with the same body shape as one that is not yours."
+        );
 
         let not_owned_unshare = unshare_task(&app, &other_key, task_id, other_username).await;
         let missing_unshare = unshare_task(&app, &owner_key, -1, other_username).await;
-        assert_eq!(not_owned_unshare.status().as_u16(), 401);
-        assert_eq!(missing_unshare.status().as_u16(), 401);
+        assert_forbidden(
+            &not_owned_unshare,
+            "Unsharing someone else's task should be a 403.",
+        );
+        assert_forbidden(
+            &missing_unshare,
+            "Unsharing a missing task should be a 403.",
+        );
+        assert_eq!(
+            json_body_keys(missing_unshare),
+            json_body_keys(not_owned_unshare),
+            "A missing task must be reported with the same body shape as one that is not yours."
+        );
+
+        let not_owned_get = get_task(&app, &other_key, task_id).await;
+        let missing_get = get_task(&app, &owner_key, -1).await;
+        assert_forbidden(
+            &not_owned_get,
+            "Reading someone else's task should be a 403.",
+        );
+        assert_forbidden(&missing_get, "Reading a missing task should be a 403.");
+        assert_eq!(
+            json_body_keys(missing_get),
+            json_body_keys(not_owned_get),
+            "A missing task must be reported with the same body shape as one that is not yours."
+        );
+
+        let not_owned_patch = set_task_completed(&app, &other_key, task_id, true).await;
+        let missing_patch = set_task_completed(&app, &owner_key, -1, true).await;
+        assert_forbidden(
+            &not_owned_patch,
+            "Updating someone else's task should be a 403.",
+        );
+        assert_forbidden(&missing_patch, "Updating a missing task should be a 403.");
+        assert_eq!(
+            json_body_keys(missing_patch),
+            json_body_keys(not_owned_patch),
+            "A missing task must be reported with the same body shape as one that is not yours."
+        );
     }
 
     #[actix_web::test]
@@ -2313,10 +2458,9 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
             .to_request();
         let update_response = test::call_service(&app, update_request).await;
-        assert_eq!(
-            update_response.status().as_u16(),
-            401,
-            "read-only sharee must not update the task"
+        assert_forbidden(
+            &update_response,
+            "A read-only sharee must get a 403 when updating the task.",
         );
 
         // The task itself must be unchanged.
@@ -2364,10 +2508,9 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
             .to_request();
         let update_response = test::call_service(&app, update_request).await;
-        assert_eq!(
-            update_response.status().as_u16(),
-            401,
-            "Unrelated user must not update the task"
+        assert_forbidden(
+            &update_response,
+            "An unrelated user must get a 403 when updating the task.",
         );
 
         // The task itself must be unchanged.
@@ -2409,7 +2552,10 @@ mod tests {
 
         let failed_share =
             share_task(&app, &grantee_key, task_id, owner_username, "read_write").await;
-        assert_eq!(failed_share.status().as_u16(), 401);
+        assert_forbidden(
+            &failed_share,
+            "A read_write sharee must get a 403 when re-sharing the task.",
+        );
 
         // The failed share call must not have created any share row.
         let list_response = assert_response_success(
@@ -2425,7 +2571,10 @@ mod tests {
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
 
         let failed_unshare = unshare_task(&app, &grantee_key, task_id, grantee_username).await;
-        assert_eq!(failed_unshare.status().as_u16(), 401);
+        assert_forbidden(
+            &failed_unshare,
+            "A read_write sharee must get a 403 when unsharing the task.",
+        );
 
         // The failed unshare call must not have removed the existing share.
         let list_response = assert_response_success(
@@ -2441,12 +2590,9 @@ mod tests {
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
 
-        assert_eq!(
-            get_task_shares(&app, &grantee_key, task_id)
-                .await
-                .status()
-                .as_u16(),
-            401
+        assert_forbidden(
+            &get_task_shares(&app, &grantee_key, task_id).await,
+            "A read_write sharee must get a 403 when listing the shares.",
         );
     }
 
@@ -2577,7 +2723,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn no_share_means_401_and_no_listing_entry() {
+    async fn no_share_means_403_and_no_listing_entry() {
         let owner_username = "no-share-owner-username";
         let stranger_username = "no-share-stranger-username";
         let password = "no-share-password";
@@ -2597,7 +2743,10 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
             .to_request();
         let get_response = test::call_service(&app, get_request).await;
-        assert_eq!(get_response.status().as_u16(), 401);
+        assert_forbidden(
+            &get_response,
+            "A user with no share on a task must get a 403 when fetching it.",
+        );
 
         let list_request = test::TestRequest::get()
             .uri("/all_tasks")

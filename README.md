@@ -25,13 +25,32 @@ All data is sent and received as JSON. All responses (aside from is\_alive) addi
 include a request\_id key which uniquely identifies the request.
 
 Every endpoint which takes an auth\_key requires it in the `Authorization: Bearer <auth_key>`
-header. RFC 9110 asks every 401 to name the scheme the client may retry with, so those
-endpoints answer a rejected request with `WWW-Authenticate: Bearer realm="todo"`, plus
-the RFC 6750 error code which says what to do next: `error="invalid_request"` when the
-header was missing or malformed, and `error="invalid_token"` when an auth key was
-presented but is unknown or expired. Only one challenge is sent, so the realm is sent
-on its own where no error code applies. `/login`, the one endpoint which takes credentials
-rather than an auth key, answers its own 401s with the Basic challenge instead.
+header. RFC 9110 asks every 401 to name the scheme the client may retry with, and lets an
+origin server name it on a 403 as well to make clear that authentication succeeded and the
+request was still refused, so those endpoints answer a rejected request with
+`WWW-Authenticate: Bearer realm="todo"`, plus the RFC 6750 error code which says what to do
+next: `error="invalid_request"` when the header was missing or malformed,
+`error="invalid_token"` when an auth key was presented but is unknown or expired, and
+`error="insufficient_scope"` when the key was accepted but the request is still refused.
+Only one challenge is sent, so the realm is sent on its own where no error code applies.
+/login, the one endpoint which takes credentials rather than an auth key, answers its own
+401s with the Basic challenge instead.
+
+A rejected request is reported as one of two statuses, and the difference tells the client
+whether authenticating again could ever help:
+
+- **401 Unauthorized**: the request carried no credentials, or credentials which were never
+  accepted. Getting a new auth key is the fix.
+- **403 Forbidden**: the request was authenticated and is still refused — reading a task you
+  hold no share on, updating one you may only read, or managing the shares on a task you do
+  not own. The auth key was good, so a 401 here would send the client in circles asking for
+  a key that would be refused exactly the same way.
+
+A task you may not see and a task which does not exist are deliberately indistinguishable:
+both answer 403 with the same body shape, on `GET /task\_by\_id`, `PATCH /task\_by\_id`,
+`POST /share\_task`, `GET /task\_shares`, and `DELETE /unshare\_task`. Usernames and user ids
+are public, so a real lookup miss there is still a 404: an unknown target username in
+`/share\_task` or `/unshare\_task`, and an unknown id in `/user\_by\_id`.
 
 ### DELETE
 

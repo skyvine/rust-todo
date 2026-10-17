@@ -14,7 +14,13 @@ pub enum ApplicationError {
     InvalidData(String),
     InvalidPassword,
     QueryFailed(String),
+    /// No credentials reached the server, or the ones presented were never
+    /// accepted. Answered with a 401, which asks the client to authenticate.
     Unauthorized,
+    /// The caller was authenticated and still may not do this. Answered with a
+    /// 403, which asks for nothing new: another auth key would fail the same
+    /// way, so telling the client to get one is a lie.
+    Forbidden,
     UserExists,
 }
 
@@ -279,7 +285,7 @@ pub enum Permission {
 /// - `Permission::None` when there is no share row.
 ///
 /// Returns `ApplicationError::DieselError(NotFound)` if the task does not
-/// exist, so callers can keep hiding task existence behind a uniform 401.
+/// exist, so callers can keep hiding task existence behind a uniform 403.
 pub fn get_task_permission(
     user: &User,
     task_id: &i32,
@@ -657,13 +663,13 @@ pub fn update_task(
 
     // Owners and read-write share holders may update the task. Read-only
     // and unrelated users may not. A missing task and a task the caller
-    // can't write both produce Unauthorized, so we don't leak which task
+    // can't write both produce Forbidden, so we don't leak which task
     // IDs exist.
     match get_task_permission(caller, task_id, connection) {
         Ok(Permission::Owner) | Ok(Permission::ReadWrite) => (),
-        Ok(_) => return Err(ApplicationError::Unauthorized),
+        Ok(_) => return Err(ApplicationError::Forbidden),
         Err(ApplicationError::DieselError(diesel::result::Error::NotFound)) => {
-            return Err(ApplicationError::Unauthorized);
+            return Err(ApplicationError::Forbidden);
         }
         Err(e) => return Err(e),
     }
@@ -696,7 +702,7 @@ pub fn update_task(
 
 /// Verify that `owner` owns the task `task_id`, without revealing whether
 /// the task exists. Both a missing task and a task owned by someone else
-/// produce `ApplicationError::Unauthorized`.
+/// produce `ApplicationError::Forbidden`.
 fn require_task_owner(
     owner: &User,
     task_id: &i32,
@@ -707,11 +713,11 @@ fn require_task_owner(
             if task.owner_id() == owner.ref_id() {
                 Ok(())
             } else {
-                Err(ApplicationError::Unauthorized)
+                Err(ApplicationError::Forbidden)
             }
         }
         Err(ApplicationError::DieselError(diesel::result::Error::NotFound)) => {
-            Err(ApplicationError::Unauthorized)
+            Err(ApplicationError::Forbidden)
         }
         Err(e) => Err(e),
     }
