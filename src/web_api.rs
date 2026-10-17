@@ -1,36 +1,24 @@
 use crate::core::{
-    add_share_for_task,
-    add_user,
-    auth_key_to_user,
-    establish_connection,
-    get_incomplete_tasks_for_user,
-    get_new_auth_key,
-    get_task_permission,
-    get_user_by_name,
-    list_shares_for_task,
-    remove_share,
-    ApplicationError,
-    Permission,
-    SharePermission,
+    ApplicationError, Permission, SharePermission, add_share_for_task, add_user, auth_key_to_user,
+    establish_connection, get_incomplete_tasks_for_user, get_new_auth_key, get_task_permission,
+    get_user_by_name, list_shares_for_task, remove_share,
 };
 use crate::domain_types::{AuthKey, CleartextPassword, TaskDescription, TaskTitle, Username};
 
-use actix_web::{delete, get, post, HttpResponse, Responder};
 use actix_web::{
-    dev::Payload, error::InternalError, error::QueryPayloadError, Error, FromRequest, HttpRequest,
+    Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::QueryPayloadError,
 };
+use actix_web::{HttpResponse, Responder, delete, get, post};
 use argon2::{
-    password_hash::{
-        rand_core::OsRng, PasswordHash, PasswordHasher, SaltString
-    },
-    Argon2
+    Argon2,
+    password_hash::{PasswordHash, PasswordHasher, SaltString, rand_core::OsRng},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::future::{ready, Ready};
-use tracing::{event, span, Level};
+use std::future::{Ready, ready};
+use tracing::{Level, event, span};
 use uuid::Uuid;
-use zeroize::{ZeroizeOnDrop};
+use zeroize::ZeroizeOnDrop;
 
 /// The body shared by all error responses: the request id, plus an
 /// optional message for client errors.
@@ -39,7 +27,10 @@ fn error_body(request_id: impl std::fmt::Display) -> String {
 }
 
 fn error_body_with_message(request_id: impl std::fmt::Display, message: impl Serialize) -> String {
-    format!("{}", json!({"request_id": request_id.to_string(), "message": message}))
+    format!(
+        "{}",
+        json!({"request_id": request_id.to_string(), "message": message})
+    )
 }
 
 impl ApplicationError {
@@ -48,10 +39,12 @@ impl ApplicationError {
             ApplicationError::DieselError(e) => {
                 event!(Level::ERROR, "Diesel error: {e}");
                 match e {
-                    diesel::result::Error::NotFound => HttpResponse::NotFound().body(error_body(request_id)),
+                    diesel::result::Error::NotFound => {
+                        HttpResponse::NotFound().body(error_body(request_id))
+                    }
                     _ => HttpResponse::InternalServerError().body(error_body(request_id)),
                 }
-            },
+            }
             ApplicationError::InvalidAuthKey => {
                 event!(Level::ERROR, "Invalid auth key");
                 HttpResponse::Unauthorized().body(error_body(request_id))
@@ -63,11 +56,11 @@ impl ApplicationError {
             ApplicationError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
                 HttpResponse::Unauthorized().body(error_body(request_id))
-            },
+            }
             ApplicationError::QueryFailed(e) => {
                 event!(Level::ERROR, "Query failed: {e}");
                 HttpResponse::InternalServerError().body(error_body(request_id))
-            },
+            }
             ApplicationError::Unauthorized => {
                 event!(Level::ERROR, "Unauthorized");
                 HttpResponse::Unauthorized().body(error_body(request_id))
@@ -111,7 +104,7 @@ impl AuthKey {
             // Schemes are case insensitive, so `bearer` is `Bearer` as well.
             (Some(scheme), Some(key), None) if scheme.eq_ignore_ascii_case(BEARER_SCHEME) => {
                 Ok(AuthKey::new(String::from(key)))
-            },
+            }
             _ => Err(unauthorized_error(request_id)),
         }
     }
@@ -124,8 +117,9 @@ fn unauthorized_error(request_id: Uuid) -> Error {
     event!(Level::ERROR, "Missing or malformed Authorization header");
     InternalError::from_response(
         "Missing or malformed Authorization header",
-        HttpResponse::Unauthorized().body(error_body(request_id))
-    ).into()
+        HttpResponse::Unauthorized().body(error_body(request_id)),
+    )
+    .into()
 }
 
 impl FromRequest for AuthKey {
@@ -147,7 +141,8 @@ impl FromRequest for AuthKey {
 pub fn query_error_handler(err: QueryPayloadError, _req: &HttpRequest) -> Error {
     let request_id = Uuid::new_v4();
     event!(Level::ERROR, "Unable to read the query string: {err}");
-    InternalError::from_response(err, HttpResponse::BadRequest().body(error_body(request_id))).into()
+    InternalError::from_response(err, HttpResponse::BadRequest().body(error_body(request_id)))
+        .into()
 }
 
 // DELETE endpoints
@@ -158,14 +153,15 @@ pub async fn logout(auth_key: AuthKey) -> impl Responder {
     let _enter_guard = span!(Level::ERROR, "Logout", %request_id).entered();
 
     match establish_connection() {
-        Ok(mut connection) => {
-            match crate::core::logout(auth_key.as_str(), &mut connection) {
-                Ok(()) => HttpResponse::Ok().finish(),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
+        Ok(mut connection) => match crate::core::logout(auth_key.as_str(), &mut connection) {
+            Ok(()) => HttpResponse::Ok().finish(),
+            Err(e) => e.into_http_response(&format!("{request_id}")),
         },
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -186,12 +182,18 @@ pub async fn get_all_tasks(auth_key: AuthKey) -> impl Responder {
             };
 
             match crate::core::get_all_tasks_for_user(&user, &mut connection) {
-                Ok(tasks) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "tasks": tasks}))),
+                Ok(tasks) => HttpResponse::Ok().body(format!(
+                    "{}",
+                    json!({"request_id": format!("{request_id}"), "tasks": tasks})
+                )),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -210,12 +212,18 @@ pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
             };
 
             match get_incomplete_tasks_for_user(&user, &mut connection) {
-                Ok(tasks) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "tasks": tasks}))),
+                Ok(tasks) => HttpResponse::Ok().body(format!(
+                    "{}",
+                    json!({"request_id": format!("{request_id}"), "tasks": tasks})
+                )),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -228,14 +236,16 @@ struct TaskByIdQuery {
 }
 
 /// Returns a specific task based on the ID of the given task.
-/// 
+///
 /// The user must be logged in as the task's owner or have a share on
 /// the task in order to get the task.
 #[get("/task_by_id")]
-pub async fn get_task_by_id(auth_key: AuthKey, query: actix_web::web::Query<TaskByIdQuery>) -> impl Responder {
+pub async fn get_task_by_id(
+    auth_key: AuthKey,
+    query: actix_web::web::Query<TaskByIdQuery>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Task by ID", %request_id).entered();
-
 
     match establish_connection() {
         Ok(mut connection) => {
@@ -250,14 +260,22 @@ pub async fn get_task_by_id(auth_key: AuthKey, query: actix_web::web::Query<Task
             match get_task_permission(&user, &query.id, &mut connection) {
                 Ok(Permission::Owner) | Ok(Permission::ReadOnly) | Ok(Permission::ReadWrite) => {
                     match crate::core::get_task_by_id(&query.id, &mut connection) {
-                        Ok(task) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "task": task}))),
+                        Ok(task) => HttpResponse::Ok().body(format!(
+                            "{}",
+                            json!({"request_id": format!("{request_id}"), "task": task})
+                        )),
                         Err(e) => e.into_http_response(&format!("{request_id}")),
                     }
-                },
+                }
                 Ok(_) => {
-                    event!(Level::ERROR, "Cannot get task {}: user {} has no task access", query.id, user.ref_id());
+                    event!(
+                        Level::ERROR,
+                        "Cannot get task {}: user {} has no task access",
+                        query.id,
+                        user.ref_id()
+                    );
                     HttpResponse::Unauthorized().body(error_body(request_id))
-                },
+                }
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
                     // task": both are the same 401 to avoid leaking which
@@ -265,20 +283,23 @@ pub async fn get_task_by_id(auth_key: AuthKey, query: actix_web::web::Query<Task
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot get task {}: not found", query.id);
                         HttpResponse::Unauthorized().body(error_body(request_id))
-                    },
+                    }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
             }
         }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
 }
 
 /// An endpoint to checks that the server is up.
-/// 
+///
 /// This endpoint always responds with status OK simply to verify that
 /// the server is running and responding to requests.
 #[get("/is_alive")]
@@ -297,7 +318,10 @@ struct UserByIdQuery {
 /// responses) to that user's username. User ids are public, so an unknown
 /// id simply returns 404.
 #[get("/user_by_id")]
-pub async fn get_user_by_id(auth_key: AuthKey, query: actix_web::web::Query<UserByIdQuery>) -> impl Responder {
+pub async fn get_user_by_id(
+    auth_key: AuthKey,
+    query: actix_web::web::Query<UserByIdQuery>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get User By ID", %request_id).entered();
 
@@ -309,12 +333,18 @@ pub async fn get_user_by_id(auth_key: AuthKey, query: actix_web::web::Query<User
             };
 
             match crate::core::get_user_by_id(&query.id, &mut connection) {
-                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "username": user.ref_username()}))),
+                Ok(user) => HttpResponse::Ok().body(format!(
+                    "{}",
+                    json!({"request_id": format!("{request_id}"), "username": user.ref_username()})
+                )),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -327,16 +357,21 @@ pub async fn whoami(auth_key: AuthKey) -> impl Responder {
     let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
 
     match establish_connection() {
-        Ok(mut conn) => 
-            match auth_key_to_user(auth_key.as_str(), &mut conn) {
-                Ok(user) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}))),
-                Err(e) => {
-                    event!(Level::ERROR, "Unable to look up user");
-                    e.into_http_response(&format!("{request_id}"))
-                }
-            },
+        Ok(mut conn) => match auth_key_to_user(auth_key.as_str(), &mut conn) {
+            Ok(user) => HttpResponse::Ok().body(format!(
+                "{}",
+                json!({ "request_id": format!("{}", request_id), "username": user.ref_username()})
+            )),
+            Err(e) => {
+                event!(Level::ERROR, "Unable to look up user");
+                e.into_http_response(&format!("{request_id}"))
+            }
+        },
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -346,13 +381,13 @@ pub async fn whoami(auth_key: AuthKey) -> impl Responder {
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct AddTaskPayload {
-    auth_key:    String,
-    title:       String,
+    auth_key: String,
+    title: String,
     description: Option<String>,
 }
 
 /// Creates a new task.
-/// 
+///
 /// "Completed" defaults to "false"
 #[post("/add_task")]
 pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
@@ -373,16 +408,22 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
         Ok(mut connection) => {
             let owner = match auth_key_to_user(&payload.auth_key, &mut connection) {
                 Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}"))
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
             match crate::core::add_task(&owner, &title, false, description, &mut connection) {
-                Ok(task) => HttpResponse::Created().body(format!("{}", json!({"request_id": format!("{request_id}"), "task_id": task.id()}))),
+                Ok(task) => HttpResponse::Created().body(format!(
+                    "{}",
+                    json!({"request_id": format!("{request_id}"), "task_id": task.id()})
+                )),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
-        },
+        }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -390,7 +431,7 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct LoginPayload {
     username: String,
-    password: String
+    password: String,
 }
 
 /// Gives a new auth key to the user.
@@ -419,7 +460,11 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
             let hashed_password = match PasswordHash::new(user.ref_password()) {
                 Ok(ph) => ph,
                 Err(e) => {
-                    event!(Level::ERROR, "Unable to parse hashed password ({}): {e:?}", user.ref_password());
+                    event!(
+                        Level::ERROR,
+                        "Unable to parse hashed password ({}): {e:?}",
+                        user.ref_password()
+                    );
                     return HttpResponse::InternalServerError().body(error_body(request_id));
                 }
             };
@@ -428,9 +473,12 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
                 Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")}))),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
-        },
+        }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -443,13 +491,15 @@ struct UserRegistrationPayload {
 }
 
 /// Create an account with the given account info.
-/// 
+///
 /// On a success, the user will be added to the database as a valid user and return HTTP OK.
-/// 
+///
 /// In any error state this will create a log event at the ERROR level and return an appropriate
 /// error HTTP response to send back to the client.
 #[post("/register_account")]
-pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistrationPayload>) -> impl Responder {
+pub async fn register_account(
+    mut account_info: actix_web::web::Json<UserRegistrationPayload>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
 
@@ -483,10 +533,13 @@ pub async fn register_account(mut account_info: actix_web::web::Json<UserRegistr
                 Ok(()) => HttpResponse::Created().finish(),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
-        },
+        }
 
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e}.");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e}."
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -513,11 +566,13 @@ struct UpdateTaskPayload {
 }
 
 /// Changes one or more of the task's fields.
-/// 
+///
 /// It is an error for all of the optional values to be None; at least on field must be updated for
 /// this endpoint to succeed.
 #[post("/task_by_id")]
-pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPayload>) -> impl Responder {
+pub async fn update_task_by_id(
+    mut payload: actix_web::web::Json<UpdateTaskPayload>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Update Task", %request_id).entered();
 
@@ -525,7 +580,10 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
     // optional field is set, this equals the default (all None).
     if payload.updates == TaskUpdates::default() {
         event!(Level::ERROR, "No fields provided to update");
-        return HttpResponse::BadRequest().body(error_body_with_message(request_id, "At least one field must be provided"));
+        return HttpResponse::BadRequest().body(error_body_with_message(
+            request_id,
+            "At least one field must be provided",
+        ));
     }
 
     let title = if let Some(title) = payload.updates.title.as_mut() {
@@ -540,7 +598,11 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
         None
     };
 
-    let description = payload.updates.description.as_mut().map(|d| TaskDescription::new(std::mem::take(d)));
+    let description = payload
+        .updates
+        .description
+        .as_mut()
+        .map(|d| TaskDescription::new(std::mem::take(d)));
 
     match establish_connection() {
         Ok(mut connection) => {
@@ -549,7 +611,14 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::update_task(&caller, &payload.id, payload.updates.completed, title, description, &mut connection) {
+            match crate::core::update_task(
+                &caller,
+                &payload.id,
+                payload.updates.completed,
+                title,
+                description,
+                &mut connection,
+            ) {
                 Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
@@ -558,13 +627,16 @@ pub async fn update_task_by_id(mut payload: actix_web::web::Json<UpdateTaskPaylo
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
                         HttpResponse::Unauthorized().body(error_body(request_id))
-                    },
+                    }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
             }
-        },
+        }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -591,7 +663,10 @@ pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> 
         Ok(p) => p,
         Err(e) => {
             event!(Level::ERROR, "Invalid permission: {e:?}");
-            return HttpResponse::BadRequest().body(error_body_with_message(request_id, "permission must be \"read\" or \"read_write\""));
+            return HttpResponse::BadRequest().body(error_body_with_message(
+                request_id,
+                "permission must be \"read\" or \"read_write\"",
+            ));
         }
     };
 
@@ -616,9 +691,12 @@ pub async fn share_task(mut payload: actix_web::web::Json<ShareTaskPayload>) -> 
                 // your task", so the 401 doesn't reveal which.
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
-        },
+        }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -656,9 +734,12 @@ pub async fn unshare_task(mut payload: actix_web::web::Json<UnshareTaskPayload>)
                 Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
-        },
+        }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -672,7 +753,10 @@ struct TaskSharesQuery {
 
 /// Lists the shares on a task owned by the caller.
 #[get("/task_shares")]
-pub async fn get_task_shares(auth_key: AuthKey, query: actix_web::web::Query<TaskSharesQuery>) -> impl Responder {
+pub async fn get_task_shares(
+    auth_key: AuthKey,
+    query: actix_web::web::Query<TaskSharesQuery>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Task Shares", %request_id).entered();
 
@@ -688,13 +772,19 @@ pub async fn get_task_shares(auth_key: AuthKey, query: actix_web::web::Query<Tas
                     let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
                         json!({"username": s.username(), "permission": s.permission().as_stored_text()})
                     }).collect();
-                    HttpResponse::Ok().body(format!("{}", json!({"request_id": format!("{request_id}"), "shares": shares})))
-                },
+                    HttpResponse::Ok().body(format!(
+                        "{}",
+                        json!({"request_id": format!("{request_id}"), "shares": shares})
+                    ))
+                }
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
-        },
+        }
         Err(e) => {
-            event!(Level::ERROR, "Unable to establish connection to database: {e:?}");
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
             HttpResponse::InternalServerError().body(error_body(request_id))
         }
     }
@@ -702,14 +792,14 @@ pub async fn get_task_shares(auth_key: AuthKey, query: actix_web::web::Query<Tas
 
 #[cfg(test)]
 mod tests {
-    use actix_http::Request;
-    use actix_web::http::header::AUTHORIZATION;
-    use actix_web::get;
-    use actix_web::{body::MessageBody, dev::Service, dev::ServiceResponse, test, web, App, Error};
     use crate::{build_app, core::Task};
+    use actix_http::Request;
+    use actix_web::get;
+    use actix_web::http::header::AUTHORIZATION;
+    use actix_web::{App, Error, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use ctor::ctor;
     use serde::Deserialize;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     use uuid::Uuid;
 
     #[ctor]
@@ -720,28 +810,37 @@ mod tests {
         use diesel::prelude::*;
 
         // Print log messages to help debug failed tests
-        fmt().event_format(fmt::format().pretty()).with_env_filter(EnvFilter::from_default_env()).init();
+        fmt()
+            .event_format(fmt::format().pretty())
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
 
         tracing::event!(tracing::Level::TRACE, "Deleting all entries in tables.");
 
         // The tests depend on the state of the database, so ensure we always start with a clean slate.
-        match diesel::delete(auth_keys).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
+        match diesel::delete(auth_keys).execute(
+            &mut super::establish_connection().expect("Unable to connect to test database."),
+        ) {
             Ok(_) => (),
-            Err(e) => panic!("Unable to delete auth_keys entries: {e:?}")
+            Err(e) => panic!("Unable to delete auth_keys entries: {e:?}"),
         };
 
-        match diesel::delete(tasks).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
+        match diesel::delete(tasks).execute(
+            &mut super::establish_connection().expect("Unable to connect to test database."),
+        ) {
             Ok(_) => (),
-            Err(e) => panic!("Unable to delete tasks entries: {e:?}")
+            Err(e) => panic!("Unable to delete tasks entries: {e:?}"),
         };
 
-        match diesel::delete(users).execute(&mut super::establish_connection().expect("Unable to connect to test database.")) {
+        match diesel::delete(users).execute(
+            &mut super::establish_connection().expect("Unable to connect to test database."),
+        ) {
             Ok(_) => (),
-            Err(e) => panic!("Unable to delete users entries: {e:?}")
+            Err(e) => panic!("Unable to delete users entries: {e:?}"),
         };
     }
 
-    fn assert_response_success(response: ServiceResponse, message: &str) -> ServiceResponse{
+    fn assert_response_success(response: ServiceResponse, message: &str) -> ServiceResponse {
         if !response.status().is_success() {
             let formatted_response = format!("{response:?}");
             // there is currently no "as_body" method or similar, so I have to take ownership and return if I want to print the body.
@@ -759,48 +858,80 @@ mod tests {
         }
     }
 
-    async fn register_and_login<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> String {
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
-        let login_response = assert_response_success(login(&app, username, password).await, "Could not login.");
+    async fn register_and_login<E: std::fmt::Debug>(
+        app: impl Service<Request, Response = ServiceResponse, Error = E>,
+        username: &str,
+        password: &str,
+    ) -> String {
+        assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
+        let login_response =
+            assert_response_success(login(&app, username, password).await, "Could not login.");
         extract_json_string(login_response, "auth_key")
     }
 
-    async fn register<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
-        let request = test::TestRequest::post().uri("/register_account").set_json(super::UserRegistrationPayload {
-            username: String::from(username),
-            password: String::from(password)
-        }).to_request();
+    async fn register<E: std::fmt::Debug>(
+        app: impl Service<Request, Response = ServiceResponse, Error = E>,
+        username: &str,
+        password: &str,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::post()
+            .uri("/register_account")
+            .set_json(super::UserRegistrationPayload {
+                username: String::from(username),
+                password: String::from(password),
+            })
+            .to_request();
         test::call_service(&app, request).await
     }
 
-    async fn login<E: std::fmt::Debug>(app: impl Service<Request, Response = ServiceResponse, Error = E>, username: &str, password: &str) -> ServiceResponse {
-        let request = test::TestRequest::post().uri("/login").set_json(super::LoginPayload {
-            username: String::from(username),
-            password: String::from(password),
-        }).to_request();
+    async fn login<E: std::fmt::Debug>(
+        app: impl Service<Request, Response = ServiceResponse, Error = E>,
+        username: &str,
+        password: &str,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::post()
+            .uri("/login")
+            .set_json(super::LoginPayload {
+                username: String::from(username),
+                password: String::from(password),
+            })
+            .to_request();
         test::call_service(&app, request).await
     }
 
-    async fn add_task(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, title: &str, description: Option<&str>) -> ServiceResponse {
-        let request = test::TestRequest::post().uri("/add_task").set_json(super::AddTaskPayload {
-            auth_key: String::from(auth_key),
-            title: String::from(title),
-            description: description.map(String::from),
-        }).to_request();
+    async fn add_task(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        title: &str,
+        description: Option<&str>,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::post()
+            .uri("/add_task")
+            .set_json(super::AddTaskPayload {
+                auth_key: String::from(auth_key),
+                title: String::from(title),
+                description: description.map(String::from),
+            })
+            .to_request();
         test::call_service(app, request).await
     }
 
-    fn extract_json_from_constructor<Constructor, Output>(response: ServiceResponse, key: &str, constructor: Constructor) -> Output
-        where Constructor: FnOnce(&serde_json::Value) -> Output
+    fn extract_json_from_constructor<Constructor, Output>(
+        response: ServiceResponse,
+        key: &str,
+        constructor: Constructor,
+    ) -> Output
+    where
+        Constructor: FnOnce(&serde_json::Value) -> Output,
     {
         match response.into_body().try_into_bytes() {
-            Ok(bytes) =>
-                match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
-                    Ok(dict) => {
-                        constructor(&dict[key])
-                    },
-                    Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
-                },
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes.as_ref()) {
+                Ok(dict) => constructor(&dict[key]),
+                Err(_) => panic!("Unable to deserialize alleged JSON: {bytes:?}"),
+            },
             Err(e) => {
                 panic!("Unable to extract bytes from response {e:?}")
             }
@@ -808,49 +939,64 @@ mod tests {
     }
 
     fn extract_shares(response: ServiceResponse) -> Vec<serde_json::Value> {
-        let body: serde_json::Value = serde_json::from_slice(&response.into_body().try_into_bytes().unwrap()).unwrap();
-        body["shares"].as_array().expect("shares should be an array").clone()
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().try_into_bytes().unwrap()).unwrap();
+        body["shares"]
+            .as_array()
+            .expect("shares should be an array")
+            .clone()
     }
 
     fn extract_json_tasks(response: ServiceResponse) -> Vec<Task> {
-        extract_json_from_constructor(response, "tasks", |v|
-            match v.as_array() {
-                Some(a) => a.iter().map(|obj| match Task::from_json_object(obj) {
+        extract_json_from_constructor(response, "tasks", |v| match v.as_array() {
+            Some(a) => a
+                .iter()
+                .map(|obj| match Task::from_json_object(obj) {
                     Ok(task) => task,
                     Err(e) => panic!("Could not parse task: {e:?}"),
-                }).collect(),
-                None => panic!("{} is not an array!", v),
-            })
+                })
+                .collect(),
+            None => panic!("{} is not an array!", v),
+        })
     }
 
     fn extract_json_i32(response: ServiceResponse, key: &str) -> i32 {
-        extract_json_from_constructor(response, key, |v|
-            match v.as_i64() {
-                Some(i) => i as i32,
-                None => panic!("{} is not a number! {:?}", key, v),
-            })
+        extract_json_from_constructor(response, key, |v| match v.as_i64() {
+            Some(i) => i as i32,
+            None => panic!("{} is not a number! {:?}", key, v),
+        })
     }
 
     fn extract_json_string(response: ServiceResponse, key: &str) -> String {
-        extract_json_from_constructor(response, key, |v|
-            match v.as_str() {
-                Some(s) => String::from(s),
-                None => panic!("{} is not a string! {:?}", key, v),
-            })
+        extract_json_from_constructor(response, key, |v| match v.as_str() {
+            Some(s) => String::from(s),
+            None => panic!("{} is not a string! {:?}", key, v),
+        })
     }
 
     #[actix_web::test]
     async fn is_alive() {
         let app = test::init_service(build_app!()).await;
         let request = test::TestRequest::get().uri("/is_alive").to_request();
-        let response = assert_response_success(test::call_service(&app, request).await, "Is alive check failed.");
-        assert_eq!(response.into_body().size(), actix_web::body::BodySize::Sized(0));
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "Is alive check failed.",
+        );
+        assert_eq!(
+            response.into_body().size(),
+            actix_web::body::BodySize::Sized(0)
+        );
     }
 
     #[actix_web::test]
     async fn regitering_account_is_successful() {
         let app = test::init_service(build_app!()).await;
-        let response = register(app, "register-account-is-successful-name", "register-account-is-successful-password").await;
+        let response = register(
+            app,
+            "register-account-is-successful-name",
+            "register-account-is-successful-password",
+        )
+        .await;
         assert_response_success(response, "Error status code");
     }
 
@@ -860,7 +1006,10 @@ mod tests {
         let password = String::from("duplicated-password");
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, name.as_str(), password.as_str()).await, "Failed to register the account once.");
+        assert_response_success(
+            register(&app, name.as_str(), password.as_str()).await,
+            "Failed to register the account once.",
+        );
 
         let response = register(&app, name.as_str(), password.as_str()).await;
         assert_client_error(response, "Response did not indicate client failure");
@@ -870,13 +1019,18 @@ mod tests {
     async fn auth_key_is_recognized() {
         let username = String::from("auth-key-registered-name");
         let password = String::from("auth-key-registered-password");
-        let app =
-            test::init_service(build_app!()).await;
+        let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
-        let whoami_request = test::TestRequest::get().uri("/whoami").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let whoami_response = assert_response_success(test::call_service(&app, whoami_request).await, "Whoami request failed.");
+        let whoami_request = test::TestRequest::get()
+            .uri("/whoami")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let whoami_response = assert_response_success(
+            test::call_service(&app, whoami_request).await,
+            "Whoami request failed.",
+        );
 
         let response_name = extract_json_string(whoami_response, "username");
         assert_eq!(username, response_name);
@@ -888,7 +1042,10 @@ mod tests {
         let password = "invalid-password-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, username, password).await, "Unable to register account");
+        assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
 
         let response = login(&app, username, "not-the-correct-password").await;
         assert_client_error(response, "Response did not indicate client error");
@@ -901,31 +1058,52 @@ mod tests {
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username, password).await;
-        
-        let logout_request = test::TestRequest::delete().uri("/logout").insert_header((AUTHORIZATION, format!("bearer {auth_key}"))).to_request();
-        assert_response_success(test::call_service(&app, logout_request).await, "Unable to log out.");
 
-        let whoami_request = test::TestRequest::get().uri("/whoami").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+        let logout_request = test::TestRequest::delete()
+            .uri("/logout")
+            .insert_header((AUTHORIZATION, format!("bearer {auth_key}")))
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, logout_request).await,
+            "Unable to log out.",
+        );
+
+        let whoami_request = test::TestRequest::get()
+            .uri("/whoami")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
         let whoami_response = test::call_service(&app, whoami_request).await;
-        assert_eq!(whoami_response.status().as_u16(), 401, "WhoAmI did not return client error.");
+        assert_eq!(
+            whoami_response.status().as_u16(),
+            401,
+            "WhoAmI did not return client error."
+        );
     }
 
     #[actix_web::test]
     async fn can_add_task() {
         let username = String::from("can-add-task-username");
         let password = String::from("can-add-task-password");
-        let app =
-            test::init_service(build_app!()).await;
+        let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
-        assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
+        assert_response_success(
+            add_task(&app, &auth_key, "test title", Some("test description")).await,
+            "Unable to add task.",
+        );
     }
 
     #[actix_web::test]
     async fn cannot_add_task_without_valid_auth_key() {
         let app = test::init_service(build_app!()).await;
-        let response = add_task(&app, "this-is-not-a-valid-auth-key", "test title", Some("test description")).await;
+        let response = add_task(
+            &app,
+            "this-is-not-a-valid-auth-key",
+            "test title",
+            Some("test description"),
+        )
+        .await;
         assert_client_error(response, "Response did not indicate client failure");
     }
 
@@ -933,16 +1111,24 @@ mod tests {
     async fn can_get_task() {
         let username = String::from("can-get-task-username");
         let password = String::from("can-get-task-password");
-        let app =
-            test::init_service(build_app!()).await;
+        let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
-        let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
+        let add_task_response = assert_response_success(
+            add_task(&app, &auth_key, "test title", Some("test description")).await,
+            "Unable to add task.",
+        );
 
         let task_id = extract_json_i32(add_task_response, "task_id");
-        let get_task_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task.");
+        let get_task_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let get_task_response = assert_response_success(
+            test::call_service(&app, get_task_request).await,
+            "Unable to get task.",
+        );
         let task = extract_json_from_constructor(get_task_response, "task", Task::from_json_object);
         assert_eq!(*task.unwrap().id(), task_id);
     }
@@ -955,17 +1141,32 @@ mod tests {
         let non_owner_password = "cannot-get-different-users-task-non-owner-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_auth_key = register_and_login(&app, owner_username, owner_password).await;
 
-        let add_task_response = assert_response_success(add_task(&app, &owner_auth_key, "test title", Some("test description")).await, "Unable to add task.");
+        let add_task_response = assert_response_success(
+            add_task(
+                &app,
+                &owner_auth_key,
+                "test title",
+                Some("test description"),
+            )
+            .await,
+            "Unable to add task.",
+        );
         let task_id = extract_json_i32(add_task_response, "task_id");
 
-        let non_owner_auth_key = register_and_login(&app, non_owner_username, non_owner_password).await;
+        let non_owner_auth_key =
+            register_and_login(&app, non_owner_username, non_owner_password).await;
 
-        let get_task_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {non_owner_auth_key}"))).to_request();
+        let get_task_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {non_owner_auth_key}")))
+            .to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
-        assert!(get_task_response.status().is_client_error(), "Getting task did not indicate client error.");
+        assert!(
+            get_task_response.status().is_client_error(),
+            "Getting task did not indicate client error."
+        );
     }
 
     #[actix_web::test]
@@ -976,10 +1177,17 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let get_task_request = test::TestRequest::get().uri("/task_by_id?id=-1").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+        let get_task_request = test::TestRequest::get()
+            .uri("/task_by_id?id=-1")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
         // A missing task must look the same as a task owned by someone else: 401, not 404.
-        assert_eq!(get_task_response.status().as_u16(), 401, "Getting a nonexistent task should not reveal its nonexistence.");
+        assert_eq!(
+            get_task_response.status().as_u16(),
+            401,
+            "Getting a nonexistent task should not reveal its nonexistence."
+        );
     }
 
     #[actix_web::test]
@@ -990,10 +1198,21 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        for uri in ["/task_by_id", "/task_by_id?id=", "/task_by_id?id=not-a-number"] {
-            let get_task_request = test::TestRequest::get().uri(uri).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+        for uri in [
+            "/task_by_id",
+            "/task_by_id?id=",
+            "/task_by_id?id=not-a-number",
+        ] {
+            let get_task_request = test::TestRequest::get()
+                .uri(uri)
+                .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+                .to_request();
             let get_task_response = test::call_service(&app, get_task_request).await;
-            assert_eq!(get_task_response.status().as_u16(), 400, "{uri} should be a 400.");
+            assert_eq!(
+                get_task_response.status().as_u16(),
+                400,
+                "{uri} should be a 400."
+            );
             assert_json_error_with_request_id(get_task_response);
         }
     }
@@ -1006,62 +1225,114 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: -1,
-            auth_key,
-            updates: super::TaskUpdates {
-                completed: Some(true),
-                title: None,
-                description: None,
-            },
-        }).to_request();
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: -1,
+                auth_key,
+                updates: super::TaskUpdates {
+                    completed: Some(true),
+                    title: None,
+                    description: None,
+                },
+            })
+            .to_request();
         let update_response = test::call_service(&app, update_request).await;
-        assert_eq!(update_response.status().as_u16(), 401, "Updating a nonexistent task should not reveal its nonexistence.");
+        assert_eq!(
+            update_response.status().as_u16(),
+            401,
+            "Updating a nonexistent task should not reveal its nonexistence."
+        );
     }
 
     // TODO: Return the updated task so it can be verified
-    async fn update_task(username: &str, password: &str, completed: Option<bool>, title: Option<String>, description: Option<String>) -> Task {
+    async fn update_task(
+        username: &str,
+        password: &str,
+        completed: Option<bool>,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> Task {
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let add_task_response = assert_response_success(add_task(&app, &auth_key, "test title", Some("test description")).await, "Unable to add task.");
+        let add_task_response = assert_response_success(
+            add_task(&app, &auth_key, "test title", Some("test description")).await,
+            "Unable to add task.",
+        );
         let task_id = extract_json_i32(add_task_response, "task_id");
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: task_id,
-            auth_key: auth_key.clone(),
-            updates: super::TaskUpdates {
-                completed,
-                title,
-                description,
-            },
-        }).to_request();
-        assert_response_success(test::call_service(&app, update_request).await, "Unable to update task.");
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: task_id,
+                auth_key: auth_key.clone(),
+                updates: super::TaskUpdates {
+                    completed,
+                    title,
+                    description,
+                },
+            })
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, update_request).await,
+            "Unable to update task.",
+        );
 
-        let get_task_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let get_task_response = assert_response_success(test::call_service(&app, get_task_request).await, "Unable to get task after creating.");
+        let get_task_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let get_task_response = assert_response_success(
+            test::call_service(&app, get_task_request).await,
+            "Unable to get task after creating.",
+        );
         extract_json_from_constructor(get_task_response, "task", Task::from_json_object).unwrap()
     }
 
     #[actix_web::test]
     async fn title_is_updatable() {
         let updated_title = String::from("new title");
-        let updated_task = update_task("title-is-updateable-username", "title-is-updateable-password", None, Some(updated_title.clone()), None).await;
+        let updated_task = update_task(
+            "title-is-updateable-username",
+            "title-is-updateable-password",
+            None,
+            Some(updated_title.clone()),
+            None,
+        )
+        .await;
         assert_eq!(*updated_task.title(), updated_title)
     }
 
     #[actix_web::test]
     async fn description_is_updatable() {
         let updated_description = String::from("new description");
-        let updated_task = update_task("description-is-updateable-username", "description-is-updateable-password", None, None, Some(updated_description.clone())).await;
-        assert_eq!(*updated_task.description().as_ref().unwrap(), updated_description)
+        let updated_task = update_task(
+            "description-is-updateable-username",
+            "description-is-updateable-password",
+            None,
+            None,
+            Some(updated_description.clone()),
+        )
+        .await;
+        assert_eq!(
+            *updated_task.description().as_ref().unwrap(),
+            updated_description
+        )
     }
 
     #[actix_web::test]
     async fn completed_is_updatable() {
         let updated_completed = true;
-        let updated_task = update_task("completed-is-updateable-username", "completed-is-updateable-password", Some(updated_completed), None, None).await;
+        let updated_task = update_task(
+            "completed-is-updateable-username",
+            "completed-is-updateable-password",
+            Some(updated_completed),
+            None,
+            None,
+        )
+        .await;
         assert!(updated_task.completed())
     }
 
@@ -1073,24 +1344,55 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let first_add_response = assert_response_success(add_task(&app, &auth_key, "first task", None).await, "Unable to add first task.");
+        let first_add_response = assert_response_success(
+            add_task(&app, &auth_key, "first task", None).await,
+            "Unable to add first task.",
+        );
         let first_task_id = extract_json_i32(first_add_response, "task_id");
 
-        let second_add_response = assert_response_success(add_task(&app, &auth_key, "second task", None).await, "Unable to add second task.");
+        let second_add_response = assert_response_success(
+            add_task(&app, &auth_key, "second task", None).await,
+            "Unable to add second task.",
+        );
         let second_task_id = extract_json_i32(second_add_response, "task_id");
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: first_task_id,
-            auth_key: auth_key.clone(),
-            updates: super::TaskUpdates { completed: Some(true), title: None, description: None },
-        }).to_request();
-        assert_response_success(test::call_service(&app, update_request).await, "Unable to update first task.");
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: first_task_id,
+                auth_key: auth_key.clone(),
+                updates: super::TaskUpdates {
+                    completed: Some(true),
+                    title: None,
+                    description: None,
+                },
+            })
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, update_request).await,
+            "Unable to update first task.",
+        );
 
-        let get_second = test::TestRequest::get().uri(&format!("/task_by_id?id={second_task_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let get_second_response = assert_response_success(test::call_service(&app, get_second).await, "Unable to get second task.");
-        let second_task = extract_json_from_constructor(get_second_response, "task", Task::from_json_object).unwrap();
-        assert!(!second_task.completed(), "Updating one task changed another task's completion state");
-        assert_eq!(*second_task.title(), "second task", "Updating one task changed another task's title");
+        let get_second = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={second_task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let get_second_response = assert_response_success(
+            test::call_service(&app, get_second).await,
+            "Unable to get second task.",
+        );
+        let second_task =
+            extract_json_from_constructor(get_second_response, "task", Task::from_json_object)
+                .unwrap();
+        assert!(
+            !second_task.completed(),
+            "Updating one task changed another task's completion state"
+        );
+        assert_eq!(
+            *second_task.title(),
+            "second task",
+            "Updating one task changed another task's title"
+        );
     }
 
     #[actix_web::test]
@@ -1101,12 +1403,24 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        assert_response_success(add_task(&app, &auth_key, "task 1", None).await, "Unable to add first task.");
+        assert_response_success(
+            add_task(&app, &auth_key, "task 1", None).await,
+            "Unable to add first task.",
+        );
 
-        assert_response_success(add_task(&app, &auth_key, "task 2", None).await, "Unable to add second task.");
+        assert_response_success(
+            add_task(&app, &auth_key, "task 2", None).await,
+            "Unable to add second task.",
+        );
 
-        let get_tasks_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get tasks!");
+        let get_tasks_request = test::TestRequest::get()
+            .uri("/all_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let get_tasks_response = assert_response_success(
+            test::call_service(&app, get_tasks_request).await,
+            "Could not get tasks!",
+        );
         let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
         assert_eq!(tasks.len(), 2, "Expected 2 tasks, found {}", tasks.len());
     }
@@ -1119,45 +1433,95 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        assert_response_success(add_task(&app, &auth_key, "task 1", None).await, "Unable to add first task.");
+        assert_response_success(
+            add_task(&app, &auth_key, "task 1", None).await,
+            "Unable to add first task.",
+        );
 
-        let second_add_task_response = assert_response_success(add_task(&app, &auth_key, "task 2", None).await, "Unable to add second task.");
+        let second_add_task_response = assert_response_success(
+            add_task(&app, &auth_key, "task 2", None).await,
+            "Unable to add second task.",
+        );
         let second_task_id = extract_json_i32(second_add_task_response, "task_id");
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: second_task_id,
-            auth_key: auth_key.clone(),
-            updates: super::TaskUpdates {
-                completed: Some(true),
-                title: None,
-                description: None,
-            },
-        }).to_request();
-        assert_response_success(test::call_service(&app, update_request).await, "Unable to mark second task completed.");
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: second_task_id,
+                auth_key: auth_key.clone(),
+                updates: super::TaskUpdates {
+                    completed: Some(true),
+                    title: None,
+                    description: None,
+                },
+            })
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, update_request).await,
+            "Unable to mark second task completed.",
+        );
 
-        let get_tasks_request = test::TestRequest::get().uri("/incomplete_tasks").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let get_tasks_response = assert_response_success(test::call_service(&app, get_tasks_request).await, "Could not get incomplete tasks!");
+        let get_tasks_request = test::TestRequest::get()
+            .uri("/incomplete_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let get_tasks_response = assert_response_success(
+            test::call_service(&app, get_tasks_request).await,
+            "Could not get incomplete tasks!",
+        );
         let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
-        assert_eq!(tasks.len(), 1, "Expected 1 incomplete task, found {}", tasks.len());
+        assert_eq!(
+            tasks.len(),
+            1,
+            "Expected 1 incomplete task, found {}",
+            tasks.len()
+        );
         assert_eq!(*tasks[0].title(), "task 1");
     }
 
-    async fn share_task(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32, username: &str, permission: &str) -> ServiceResponse {
-        let request = test::TestRequest::post().uri("/share_task").set_json(super::ShareTaskPayload {
-            auth_key: String::from(auth_key), id, username: String::from(username), permission: String::from(permission),
-        }).to_request();
+    async fn share_task(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        id: i32,
+        username: &str,
+        permission: &str,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::post()
+            .uri("/share_task")
+            .set_json(super::ShareTaskPayload {
+                auth_key: String::from(auth_key),
+                id,
+                username: String::from(username),
+                permission: String::from(permission),
+            })
+            .to_request();
         test::call_service(app, request).await
     }
 
-    async fn unshare_task(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32, username: &str) -> ServiceResponse {
-        let request = test::TestRequest::delete().uri("/unshare_task").set_json(super::UnshareTaskPayload {
-            auth_key: String::from(auth_key), id, username: String::from(username),
-        }).to_request();
+    async fn unshare_task(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        id: i32,
+        username: &str,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::delete()
+            .uri("/unshare_task")
+            .set_json(super::UnshareTaskPayload {
+                auth_key: String::from(auth_key),
+                id,
+                username: String::from(username),
+            })
+            .to_request();
         test::call_service(app, request).await
     }
 
-    async fn get_task_shares(app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>, auth_key: &str, id: i32) -> ServiceResponse {
-        let request = test::TestRequest::get().uri(&format!("/task_shares?id={id}"))
+    async fn get_task_shares(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        id: i32,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::get()
+            .uri(&format!("/task_shares?id={id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         test::call_service(app, request).await
@@ -1170,15 +1534,27 @@ mod tests {
         let password = "share-list-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "shared task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
 
-        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
         let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1);
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
@@ -1192,16 +1568,31 @@ mod tests {
         let password = "reshare-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "shared task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Re-share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
+            "Re-share request failed",
+        );
 
-        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
         let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1, "Re-sharing should replace, not duplicate");
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
@@ -1214,16 +1605,34 @@ mod tests {
         let password = "nonowner-share-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let non_owner_key = register_and_login(&app, non_owner_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
+        let add_response =
+            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_eq!(share_task(&app, &non_owner_key, task_id, non_owner_username, "read").await.status().as_u16(), 401);
-        assert_eq!(unshare_task(&app, &non_owner_key, task_id, non_owner_username).await.status().as_u16(), 401);
-        assert_eq!(get_task_shares(&app, &non_owner_key, task_id).await.status().as_u16(), 401);
+        assert_eq!(
+            share_task(&app, &non_owner_key, task_id, non_owner_username, "read")
+                .await
+                .status()
+                .as_u16(),
+            401
+        );
+        assert_eq!(
+            unshare_task(&app, &non_owner_key, task_id, non_owner_username)
+                .await
+                .status()
+                .as_u16(),
+            401
+        );
+        assert_eq!(
+            get_task_shares(&app, &non_owner_key, task_id)
+                .await
+                .status()
+                .as_u16(),
+            401
+        );
     }
 
     #[actix_web::test]
@@ -1233,16 +1642,29 @@ mod tests {
         let password = "unshare-password";
         let app = test::init_service(build_app!()).await;
 
-        assert_response_success(register(&app, grantee_username, password).await, "Unable to register grantee");
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
+        let add_response =
+            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
-        assert_response_success(unshare_task(&app, &owner_key, task_id, grantee_username).await, "Unshare request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
+        assert_response_success(
+            unshare_task(&app, &owner_key, task_id, grantee_username).await,
+            "Unshare request failed",
+        );
 
-        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
         let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 0, "Share row should have been removed");
     }
@@ -1254,11 +1676,24 @@ mod tests {
         let app = test::init_service(build_app!()).await;
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
+        let add_response =
+            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_eq!(share_task(&app, &owner_key, task_id, "no-such-user", "read").await.status().as_u16(), 404);
-        assert_eq!(unshare_task(&app, &owner_key, task_id, "no-such-user").await.status().as_u16(), 404);
+        assert_eq!(
+            share_task(&app, &owner_key, task_id, "no-such-user", "read")
+                .await
+                .status()
+                .as_u16(),
+            404
+        );
+        assert_eq!(
+            unshare_task(&app, &owner_key, task_id, "no-such-user")
+                .await
+                .status()
+                .as_u16(),
+            404
+        );
     }
 
     #[actix_web::test]
@@ -1268,11 +1703,11 @@ mod tests {
         let password = "oracle-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let other_key = register_and_login(&app, other_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
+        let add_response =
+            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
         let task_id = extract_json_i32(add_response, "task_id");
 
         // Non-owner trying to manage an existing task
@@ -1300,29 +1735,51 @@ mod tests {
         let password = "rw-update-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", Some("original description")).await, "add task");
+        let add_response = assert_response_success(
+            add_task(
+                &app,
+                &owner_key,
+                "shared task",
+                Some("original description"),
+            )
+            .await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
+            "Share request failed",
+        );
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: task_id,
-            auth_key: grantee_key.clone(),
-            updates: super::TaskUpdates {
-                completed: Some(true),
-                title: Some(String::from("updated by grantee")),
-                description: Some(String::from("updated description")),
-            },
-        }).to_request();
-        assert_response_success(test::call_service(&app, update_request).await, "read_write grantee should be able to update the task");
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: task_id,
+                auth_key: grantee_key.clone(),
+                updates: super::TaskUpdates {
+                    completed: Some(true),
+                    title: Some(String::from("updated by grantee")),
+                    description: Some(String::from("updated description")),
+                },
+            })
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, update_request).await,
+            "read_write grantee should be able to update the task",
+        );
 
-        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
-        let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
-        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        let get_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
+            .to_request();
+        let get_response =
+            assert_response_success(test::call_service(&app, get_request).await, "get task");
+        let task =
+            extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
         assert!(*task.completed());
         assert_eq!(*task.title(), "updated by grantee");
         assert_eq!(task.description().as_ref().unwrap(), "updated description");
@@ -1335,32 +1792,52 @@ mod tests {
         let password = "ro-update-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "shared task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: task_id,
-            auth_key: grantee_key,
-            updates: super::TaskUpdates {
-                completed: Some(true),
-                title: None,
-                description: None,
-            },
-        }).to_request();
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: task_id,
+                auth_key: grantee_key,
+                updates: super::TaskUpdates {
+                    completed: Some(true),
+                    title: None,
+                    description: None,
+                },
+            })
+            .to_request();
         let update_response = test::call_service(&app, update_request).await;
-        assert_eq!(update_response.status().as_u16(), 401, "read-only sharee must not update the task");
+        assert_eq!(
+            update_response.status().as_u16(),
+            401,
+            "read-only sharee must not update the task"
+        );
 
         // The task itself must be unchanged.
-        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
-        let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
-        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
-        assert!(!task.completed(), "read-only sharee's update must not have been applied");
+        let get_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
+            .to_request();
+        let get_response =
+            assert_response_success(test::call_service(&app, get_request).await, "get task");
+        let task =
+            extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        assert!(
+            !task.completed(),
+            "read-only sharee's update must not have been applied"
+        );
         assert_eq!(*task.title(), "shared task");
     }
 
@@ -1371,30 +1848,47 @@ mod tests {
         let password = "unrelated-update-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let stranger_key = register_and_login(&app, stranger_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "private task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        let update_request = test::TestRequest::post().uri("/task_by_id").set_json(super::UpdateTaskPayload {
-            id: task_id,
-            auth_key: stranger_key,
-            updates: super::TaskUpdates {
-                completed: Some(true),
-                title: None,
-                description: None,
-            },
-        }).to_request();
+        let update_request = test::TestRequest::post()
+            .uri("/task_by_id")
+            .set_json(super::UpdateTaskPayload {
+                id: task_id,
+                auth_key: stranger_key,
+                updates: super::TaskUpdates {
+                    completed: Some(true),
+                    title: None,
+                    description: None,
+                },
+            })
+            .to_request();
         let update_response = test::call_service(&app, update_request).await;
-        assert_eq!(update_response.status().as_u16(), 401, "Unrelated user must not update the task");
+        assert_eq!(
+            update_response.status().as_u16(),
+            401,
+            "Unrelated user must not update the task"
+        );
 
         // The task itself must be unchanged.
-        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
-        let get_response = assert_response_success(test::call_service(&app, get_request).await, "get task");
-        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
-        assert!(!task.completed(), "Unrelated user's update must not have been applied");
+        let get_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
+            .to_request();
+        let get_response =
+            assert_response_success(test::call_service(&app, get_request).await, "get task");
+        let task =
+            extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        assert!(
+            !task.completed(),
+            "Unrelated user's update must not have been applied"
+        );
         assert_eq!(*task.title(), "private task");
     }
 
@@ -1405,35 +1899,61 @@ mod tests {
         let password = "rw-manage-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "shared task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
+            "Share request failed",
+        );
 
-        let failed_share = share_task(&app, &grantee_key, task_id, owner_username, "read_write").await;
+        let failed_share =
+            share_task(&app, &grantee_key, task_id, owner_username, "read_write").await;
         assert_eq!(failed_share.status().as_u16(), 401);
 
         // The failed share call must not have created any share row.
-        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
         let shares = extract_shares(list_response);
-        assert_eq!(shares.len(), 1, "Failed share call must not create a new share");
+        assert_eq!(
+            shares.len(),
+            1,
+            "Failed share call must not create a new share"
+        );
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
 
         let failed_unshare = unshare_task(&app, &grantee_key, task_id, grantee_username).await;
         assert_eq!(failed_unshare.status().as_u16(), 401);
 
         // The failed unshare call must not have removed the existing share.
-        let list_response = assert_response_success(get_task_shares(&app, &owner_key, task_id).await, "list shares");
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
         let shares = extract_shares(list_response);
-        assert_eq!(shares.len(), 1, "Failed unshare call must not remove the existing share");
+        assert_eq!(
+            shares.len(),
+            1,
+            "Failed unshare call must not remove the existing share"
+        );
         assert_eq!(shares[0]["username"].as_str().unwrap(), grantee_username);
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
 
-        assert_eq!(get_task_shares(&app, &grantee_key, task_id).await.status().as_u16(), 401);
+        assert_eq!(
+            get_task_shares(&app, &grantee_key, task_id)
+                .await
+                .status()
+                .as_u16(),
+            401
+        );
     }
 
     #[actix_web::test]
@@ -1444,8 +1964,15 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        for uri in ["/task_shares", "/task_shares?id=", "/task_shares?id=not-a-number"] {
-            let request = test::TestRequest::get().uri(uri).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+        for uri in [
+            "/task_shares",
+            "/task_shares?id=",
+            "/task_shares?id=not-a-number",
+        ] {
+            let request = test::TestRequest::get()
+                .uri(uri)
+                .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+                .to_request();
             let response = test::call_service(&app, request).await;
             assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
             assert_json_error_with_request_id(response);
@@ -1459,30 +1986,54 @@ mod tests {
         let password = "read-share-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "shared task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read").await, "Share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
 
         // The grantee can now fetch the task directly...
-        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
-        let get_response = assert_response_success(test::call_service(&app, get_request).await, "grantee should be able to get the shared task");
-        let task = extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
+        let get_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
+            .to_request();
+        let get_response = assert_response_success(
+            test::call_service(&app, get_request).await,
+            "grantee should be able to get the shared task",
+        );
+        let task =
+            extract_json_from_constructor(get_response, "task", Task::from_json_object).unwrap();
         assert_eq!(*task.id(), task_id);
 
         // ...and it shows up in their listings.
-        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
-        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
+        let list_request = test::TestRequest::get()
+            .uri("/all_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
+            .to_request();
+        let list_response = assert_response_success(
+            test::call_service(&app, list_request).await,
+            "list grantee tasks",
+        );
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
         assert_eq!(*tasks[0].id(), task_id);
 
-        let incomplete_request = test::TestRequest::get().uri("/incomplete_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
-        let incomplete_response = assert_response_success(test::call_service(&app, incomplete_request).await, "list grantee incomplete tasks");
+        let incomplete_request = test::TestRequest::get()
+            .uri("/incomplete_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
+            .to_request();
+        let incomplete_response = assert_response_success(
+            test::call_service(&app, incomplete_request).await,
+            "list grantee incomplete tasks",
+        );
         let incomplete: Vec<Task> = extract_json_tasks(incomplete_response);
         assert_eq!(incomplete.len(), 1);
         assert_eq!(*incomplete[0].id(), task_id);
@@ -1495,20 +2046,37 @@ mod tests {
         let password = "rw-share-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "shared task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "shared task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        assert_response_success(share_task(&app, &owner_key, task_id, grantee_username, "read_write").await, "Share request failed");
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
+            "Share request failed",
+        );
 
-        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
-        assert_response_success(test::call_service(&app, get_request).await, "read_write grantee should be able to get the task");
+        let get_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, get_request).await,
+            "read_write grantee should be able to get the task",
+        );
 
-        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {grantee_key}"))).to_request();
-        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list grantee tasks");
+        let list_request = test::TestRequest::get()
+            .uri("/all_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
+            .to_request();
+        let list_response = assert_response_success(
+            test::call_service(&app, list_request).await,
+            "list grantee tasks",
+        );
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
         assert_eq!(*tasks[0].id(), task_id);
@@ -1521,22 +2089,38 @@ mod tests {
         let password = "no-share-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
         let stranger_key = register_and_login(&app, stranger_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "private task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "private task", None).await,
+            "add task",
+        );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        let get_request = test::TestRequest::get().uri(&format!("/task_by_id?id={task_id}")).insert_header((AUTHORIZATION, format!("Bearer {stranger_key}"))).to_request();
+        let get_request = test::TestRequest::get()
+            .uri(&format!("/task_by_id?id={task_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
+            .to_request();
         let get_response = test::call_service(&app, get_request).await;
         assert_eq!(get_response.status().as_u16(), 401);
 
-        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {stranger_key}"))).to_request();
-        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list stranger tasks");
-        let body: serde_json::Value = serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
+        let list_request = test::TestRequest::get()
+            .uri("/all_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
+            .to_request();
+        let list_response = assert_response_success(
+            test::call_service(&app, list_request).await,
+            "list stranger tasks",
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&list_response.into_body().try_into_bytes().unwrap()).unwrap();
         let tasks = body["tasks"].as_array().unwrap();
-        assert_eq!(tasks.len(), 0, "Stranger should not see the task in listings");
+        assert_eq!(
+            tasks.len(),
+            0,
+            "Stranger should not see the task in listings"
+        );
     }
 
     #[actix_web::test]
@@ -1545,10 +2129,12 @@ mod tests {
         let password = "stale-share-password";
         let app = test::init_service(build_app!()).await;
 
-
         let owner_key = register_and_login(&app, owner_username, password).await;
 
-        let add_response = assert_response_success(add_task(&app, &owner_key, "owned task", None).await, "add task");
+        let add_response = assert_response_success(
+            add_task(&app, &owner_key, "owned task", None).await,
+            "add task",
+        );
         let owned_task_id = extract_json_i32(add_response, "task_id");
 
         // Simulate a stale share row granting the owner access to their own
@@ -1559,15 +2145,29 @@ mod tests {
         use crate::schema::task_shares::dsl::*;
         use diesel::prelude::*;
         diesel::insert_into(task_shares)
-            .values((task_id.eq(&owned_task_id), user_id.eq(stale_owner.ref_id()), permission.eq(crate::core::SharePermission::Read)))
+            .values((
+                task_id.eq(&owned_task_id),
+                user_id.eq(stale_owner.ref_id()),
+                permission.eq(crate::core::SharePermission::Read),
+            ))
             .execute(&mut connection)
             .expect("insert stale share row");
         drop(connection);
 
-        let list_request = test::TestRequest::get().uri("/all_tasks").insert_header((AUTHORIZATION, format!("Bearer {owner_key}"))).to_request();
-        let list_response = assert_response_success(test::call_service(&app, list_request).await, "list owner tasks");
+        let list_request = test::TestRequest::get()
+            .uri("/all_tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
+            .to_request();
+        let list_response = assert_response_success(
+            test::call_service(&app, list_request).await,
+            "list owner tasks",
+        );
         let tasks: Vec<Task> = extract_json_tasks(list_response);
-        assert_eq!(tasks.len(), 1, "Owner's task should appear exactly once even with a stale share row");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "Owner's task should appear exactly once even with a stale share row"
+        );
     }
 
     #[actix_web::test]
@@ -1587,8 +2187,14 @@ mod tests {
             *user.ref_id()
         };
 
-        let request = test::TestRequest::get().uri(&format!("/user_by_id?id={user_id}")).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
-        let response = assert_response_success(test::call_service(&app, request).await, "User by id lookup failed.");
+        let request = test::TestRequest::get()
+            .uri(&format!("/user_by_id?id={user_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "User by id lookup failed.",
+        );
         let response_name = extract_json_string(response, "username");
         assert_eq!(username, response_name);
     }
@@ -1601,9 +2207,16 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let request = test::TestRequest::get().uri("/user_by_id?id=-1").insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+        let request = test::TestRequest::get()
+            .uri("/user_by_id?id=-1")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
         let response = test::call_service(&app, request).await;
-        assert_eq!(response.status().as_u16(), 404, "Unknown user id should return 404.");
+        assert_eq!(
+            response.status().as_u16(),
+            404,
+            "Unknown user id should return 404."
+        );
     }
 
     #[actix_web::test]
@@ -1614,8 +2227,15 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        for uri in ["/user_by_id", "/user_by_id?id=", "/user_by_id?id=not-a-number"] {
-            let request = test::TestRequest::get().uri(uri).insert_header((AUTHORIZATION, format!("Bearer {auth_key}"))).to_request();
+        for uri in [
+            "/user_by_id",
+            "/user_by_id?id=",
+            "/user_by_id?id=not-a-number",
+        ] {
+            let request = test::TestRequest::get()
+                .uri(uri)
+                .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+                .to_request();
             let response = test::call_service(&app, request).await;
             assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
             assert_json_error_with_request_id(response);
@@ -1635,7 +2255,10 @@ mod tests {
     /// is observable independently of any single endpoint.
     #[get("/test_extractor_probe")]
     async fn extractor_probe(auth: super::AuthKey, query: web::Query<IdQuery>) -> String {
-        format!("{}", serde_json::json!({"auth_key": auth.as_str(), "id": query.id}))
+        format!(
+            "{}",
+            serde_json::json!({"auth_key": auth.as_str(), "id": query.id})
+        )
     }
 
     /// The extraction plumbing `build_app!` registers, plus the probe route.
@@ -1655,7 +2278,10 @@ mod tests {
     /// object holding the id of the request that failed.
     fn assert_json_error_with_request_id(response: ServiceResponse) {
         let request_id = extract_json_string(response, "request_id");
-        assert!(Uuid::parse_str(&request_id).is_ok(), "{request_id:?} is not a request id.");
+        assert!(
+            Uuid::parse_str(&request_id).is_ok(),
+            "{request_id:?} is not a request id."
+        );
     }
 
     #[actix_web::test]
@@ -1666,9 +2292,15 @@ mod tests {
             .uri("/test_extractor_probe?id=7")
             .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
             .to_request();
-        let response = assert_response_success(test::call_service(&app, request).await, "Service call unsuccessful.");
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "Service call unsuccessful.",
+        );
         let body = probe_body(response);
-        assert_eq!(body["auth_key"], "some-auth-key", "The handler should see the key.");
+        assert_eq!(
+            body["auth_key"], "some-auth-key",
+            "The handler should see the key."
+        );
         assert_eq!(body["id"], 7, "The handler should see the query parameter.");
     }
 
@@ -1680,7 +2312,10 @@ mod tests {
             .uri("/test_extractor_probe?id=7")
             .insert_header((AUTHORIZATION, "bearer some-auth-key"))
             .to_request();
-        let response = assert_response_success(test::call_service(&app, request).await, "A lowercase scheme is the Bearer scheme too.");
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "A lowercase scheme is the Bearer scheme too.",
+        );
         assert_eq!(probe_body(response)["auth_key"], "some-auth-key");
     }
 
@@ -1688,9 +2323,15 @@ mod tests {
     async fn missing_authorization_header_is_rejected() {
         let app = init_probe_app().await;
 
-        let request = test::TestRequest::get().uri("/test_extractor_probe?id=7").to_request();
+        let request = test::TestRequest::get()
+            .uri("/test_extractor_probe?id=7")
+            .to_request();
         let response = test::call_service(&app, request).await;
-        assert_eq!(response.status().as_u16(), 401, "A missing auth header should be a 401.");
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "A missing auth header should be a 401."
+        );
         assert_json_error_with_request_id(response);
     }
 
@@ -1712,7 +2353,11 @@ mod tests {
                 .insert_header((AUTHORIZATION, header_value))
                 .to_request();
             let response = test::call_service(&app, request).await;
-            assert_eq!(response.status().as_u16(), 401, "{header_value:?} should be a 401.");
+            assert_eq!(
+                response.status().as_u16(),
+                401,
+                "{header_value:?} should be a 401."
+            );
             assert_json_error_with_request_id(response);
         }
     }
