@@ -693,6 +693,65 @@ pub async fn register_account(
     }
 }
 
+// Share management endpoints
+
+#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
+struct ShareTaskPayload {
+    id: i32,
+    username: String,
+    permission: String,
+}
+
+/// Grants another user access to a task owned by the caller, or replaces
+/// the permission on an existing share.
+#[post("/share_task")]
+pub async fn share_task(auth_key: AuthKey, mut payload: actix_web::web::Json<ShareTaskPayload>) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Share Task", %request_id).entered();
+
+    let permission = match SharePermission::from_stored_text(&payload.permission) {
+        Ok(p) => p,
+        Err(e) => {
+            event!(Level::ERROR, "Invalid permission: {e:?}");
+            return HttpResponse::BadRequest().body(error_body_with_message(
+                request_id,
+                "permission must be \"read\" or \"read_write\"",
+            ));
+        }
+    };
+
+    let target = match Username::new(std::mem::take(&mut payload.username)) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
+        }
+    };
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
+                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
+                // Unauthorized covers both "task doesn't exist" and "not
+                // your task", so the 401 doesn't reveal which.
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
+            HttpResponse::InternalServerError().body(error_body(request_id))
+        }
+    }
+}
+
 // PATCH endpoints
 
 /// The fields a client may change on an existing task.
@@ -780,65 +839,6 @@ pub async fn update_task_by_id(
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
-            }
-        }
-        Err(e) => {
-            event!(
-                Level::ERROR,
-                "Unable to establish connection to database: {e:?}"
-            );
-            HttpResponse::InternalServerError().body(error_body(request_id))
-        }
-    }
-}
-
-// Share management endpoints
-
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct ShareTaskPayload {
-    id: i32,
-    username: String,
-    permission: String,
-}
-
-/// Grants another user access to a task owned by the caller, or replaces
-/// the permission on an existing share.
-#[post("/share_task")]
-pub async fn share_task(auth_key: AuthKey, mut payload: actix_web::web::Json<ShareTaskPayload>) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Share Task", %request_id).entered();
-
-    let permission = match SharePermission::from_stored_text(&payload.permission) {
-        Ok(p) => p,
-        Err(e) => {
-            event!(Level::ERROR, "Invalid permission: {e:?}");
-            return HttpResponse::BadRequest().body(error_body_with_message(
-                request_id,
-                "permission must be \"read\" or \"read_write\"",
-            ));
-        }
-    };
-
-    let target = match Username::new(std::mem::take(&mut payload.username)) {
-        Ok(un) => un,
-        Err(message) => {
-            event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
-        }
-    };
-
-    match establish_connection() {
-        Ok(mut connection) => {
-            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
-                Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}")),
-            };
-
-            match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
-                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
-                // Unauthorized covers both "task doesn't exist" and "not
-                // your task", so the 401 doesn't reveal which.
-                Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
         Err(e) => {
