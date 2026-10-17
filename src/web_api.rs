@@ -88,13 +88,19 @@ impl ApplicationError {
     }
 
     /// The challenge which a 401 from a Bearer-protected endpoint answers
-    /// with: the bearer scheme, naming the realm.
+    /// with: the bearer scheme, naming the realm, plus the RFC 6750 §3.1 error
+    /// code for the failure when there is one.
     ///
     /// Only a 401 carries a challenge — [`with_challenge`] hands every other
     /// status back untouched — and RFC 9110 asks for nothing beyond the
-    /// scheme and realm, so that is the whole answer.
+    /// scheme and realm, so that is the whole answer by default.
     fn bearer_challenge(&self) -> &'static str {
-        BEARER_CHALLENGE
+        match self {
+            // An auth key was presented and then refused, so RFC 6750 §3.1
+            // calls this `invalid_token`: the client needs new credentials.
+            ApplicationError::InvalidAuthKey => BEARER_INVALID_TOKEN_CHALLENGE,
+            _ => BEARER_CHALLENGE,
+        }
     }
 
     /// The response for an error on a Bearer-protected endpoint: the status
@@ -143,6 +149,13 @@ const BEARER_CHALLENGE: &str = "Bearer realm=\"todo\"";
 /// RFC 6750 §3.1 calls this `invalid_request`, and its advice is to fix the
 /// request rather than to get new credentials.
 const BEARER_INVALID_REQUEST_CHALLENGE: &str = "Bearer realm=\"todo\", error=\"invalid_request\"";
+
+/// The challenge for a request which presented an auth key that was unknown or
+/// expired.
+///
+/// RFC 6750 §3.1 calls this `invalid_token`, and its advice is to get new
+/// credentials.
+const BEARER_INVALID_TOKEN_CHALLENGE: &str = "Bearer realm=\"todo\", error=\"invalid_token\"";
 
 impl AuthKey {
     /// Reads the key out of an `Authorization` header.
