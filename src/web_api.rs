@@ -33,11 +33,17 @@ fn error_body(request_id: impl std::fmt::Display) -> serde_json::Value {
     json!({"request_id": request_id.to_string()})
 }
 
-fn error_body_with_message(request_id: impl std::fmt::Display, message: impl Serialize) -> String {
-    format!(
-        "{}",
-        json!({"request_id": request_id.to_string(), "message": message})
-    )
+/// The body of a client error: the request id, plus a message explaining what
+/// the client got wrong.
+///
+/// Like [`error_body`], it is returned as a [`serde_json::Value`] so that
+/// responses can be built with `HttpResponseBuilder::json`, which sets the
+/// `Content-Type` describing the body.
+fn error_body_with_message(
+    request_id: impl std::fmt::Display,
+    message: impl Serialize,
+) -> serde_json::Value {
+    json!({"request_id": request_id.to_string(), "message": message})
 }
 
 impl ApplicationError {
@@ -58,7 +64,7 @@ impl ApplicationError {
             }
             ApplicationError::InvalidData(message) => {
                 event!(Level::ERROR, "Invalid data: {message}");
-                HttpResponse::BadRequest().body(error_body_with_message(request_id, message))
+                HttpResponse::BadRequest().json(error_body_with_message(request_id, message))
             }
             ApplicationError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
@@ -548,7 +554,7 @@ pub async fn add_task(
         Ok(title) => title,
         Err(e) => {
             event!(Level::ERROR, "{e:?}");
-            return HttpResponse::BadRequest().body(error_body_with_message(request_id, e));
+            return HttpResponse::BadRequest().json(error_body_with_message(request_id, e));
         }
     };
     let description = payload.description.take().map(TaskDescription::new);
@@ -593,7 +599,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
+            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
         }
     };
 
@@ -717,7 +723,7 @@ pub async fn share_task(
         Ok(p) => p,
         Err(e) => {
             event!(Level::ERROR, "Invalid permission: {e:?}");
-            return HttpResponse::BadRequest().body(error_body_with_message(
+            return HttpResponse::BadRequest().json(error_body_with_message(
                 request_id,
                 "permission must be \"read\" or \"read_write\"",
             ));
@@ -728,7 +734,7 @@ pub async fn share_task(
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
+            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
         }
     };
 
@@ -793,7 +799,7 @@ pub async fn update_task_by_id(
     // optional field is set, this equals the default (all None).
     if payload.updates == TaskUpdates::default() {
         event!(Level::ERROR, "No fields provided to update");
-        return HttpResponse::BadRequest().body(error_body_with_message(
+        return HttpResponse::BadRequest().json(error_body_with_message(
             request_id,
             "At least one field must be provided",
         ));
@@ -804,7 +810,7 @@ pub async fn update_task_by_id(
             Ok(title) => Some(title),
             Err(e) => {
                 event!(Level::ERROR, "{e:?}");
-                return HttpResponse::BadRequest().body(error_body_with_message(request_id, e));
+                return HttpResponse::BadRequest().json(error_body_with_message(request_id, e));
             }
         }
     } else {
@@ -876,7 +882,7 @@ pub async fn unshare_task(
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(error_body_with_message(request_id, message));
+            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
         }
     };
 
