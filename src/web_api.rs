@@ -2577,6 +2577,39 @@ mod tests {
         assert_json_content_type(&response, "The 401 said nothing about its body.");
     }
 
+    #[actix_web::test]
+    async fn responses_without_a_body_declare_no_media_type() {
+        let username = "no-body-media-type-username";
+        let password = "no-body-media-type-password";
+        let app = test::init_service(build_app!()).await;
+
+        let register_response = assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
+        assert!(
+            register_response.headers().get(CONTENT_TYPE).is_none(),
+            "An empty body has no representation to describe."
+        );
+
+        let login_response =
+            assert_response_success(login(&app, username, password).await, "Could not login.");
+        let auth_key = extract_json_string(login_response, "auth_key");
+
+        let logout_request = test::TestRequest::delete()
+            .uri("/logout")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let logout_response = assert_response_success(
+            test::call_service(&app, logout_request).await,
+            "Unable to log out.",
+        );
+        assert!(
+            logout_response.headers().get(CONTENT_TYPE).is_none(),
+            "An empty body has no representation to describe."
+        );
+    }
+
     // Shared extractor tests
 
     /// The query the endpoints read their task or user id from.
