@@ -78,9 +78,6 @@ impl ApplicationError {
 }
 
 // Shared request extractors
-//
-// `/whoami` is the first endpoint to read the caller's key through the
-// `AuthKey` extractor instead of a JSON body; the rest follow as they migrate.
 
 /// The scheme an `Authorization` header must use to carry an auth key.
 const BEARER_SCHEME: &str = "Bearer";
