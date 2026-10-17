@@ -84,6 +84,8 @@ include a request\_id key which uniquely identifies the request.
 - /login: Generates a new auth key which can be used in future requests.
   - Authentication: HTTP Basic. Send an `Authorization: Basic <base64(username:password)>`
     header and no request body; the username and password are the ones belonging to the account.
+  - Failures: Every 401 answer carries a `WWW-Authenticate: Basic realm="todo", charset="UTF-8"`
+    challenge, as RFC 9110 requires, whether the header was missing or malformed or the credentials were refused.
   - Output keys:
     - auth\_key [string]: The auth\_key which can be used for requests that require authentication
 - /add\_task: Creates a new task

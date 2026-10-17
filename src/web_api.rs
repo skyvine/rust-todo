@@ -80,6 +80,14 @@ const BEARER_SCHEME: &str = "Bearer";
 /// password.
 const BASIC_SCHEME: &str = "Basic";
 
+/// The challenge which every 401 from `/login` carries, naming the protection
+/// space this server guards.
+///
+/// RFC 7617 requires the realm and permits the optional charset, whose only
+/// allowed value is UTF-8: that is the encoding this server reads credentials
+/// as.
+const LOGIN_BASIC_CHALLENGE: &str = "Basic realm=\"todo\", charset=\"UTF-8\"";
+
 impl AuthKey {
     /// Reads the key out of an `Authorization` header.
     ///
@@ -127,6 +135,35 @@ fn unauthorized_error(request_id: Uuid) -> Error {
     .into()
 }
 
+/// Puts the Basic challenge on a 401 from `/login`.
+///
+/// RFC 9110 asks for a challenge on every 401 of a protected resource, whether
+/// the request arrived without credentials or with credentials which were
+/// refused. Any other status is handed back untouched, so the challenge never
+/// leaks onto a 400 or a 500.
+fn with_basic_challenge(mut response: HttpResponse) -> HttpResponse {
+    if response.status() == actix_web::http::StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            actix_web::http::header::WWW_AUTHENTICATE,
+            actix_web::http::header::HeaderValue::from_static(LOGIN_BASIC_CHALLENGE),
+        );
+    }
+    response
+}
+
+/// Turns a missing or malformed Basic `Authorization` header into the 401 that
+/// RFC 7617 calls for: the same JSON body as every other failure, plus the
+/// challenge which tells the client which scheme to retry with.
+fn unauthorized_basic_error(request_id: Uuid) -> Error {
+    // The header itself is deliberately not logged: it carries the password.
+    event!(Level::ERROR, "Missing or malformed Basic Authorization header");
+    InternalError::from_response(
+        "Missing or malformed Basic Authorization header",
+        with_basic_challenge(HttpResponse::Unauthorized().body(error_body(request_id))),
+    )
+    .into()
+}
+
 impl FromRequest for AuthKey {
     type Error = Error;
     type Future = Ready<Result<Self, Self::Error>>;
@@ -170,11 +207,11 @@ impl Credentials {
             (Some(scheme), Some(encoded), None) if scheme.eq_ignore_ascii_case(BASIC_SCHEME) => {
                 let decoded = match STANDARD.decode(encoded) {
                     Ok(decoded) => decoded,
-                    Err(_) => return Err(unauthorized_error(request_id)),
+                    Err(_) => return Err(unauthorized_basic_error(request_id)),
                 };
                 let decoded = match String::from_utf8(decoded) {
                     Ok(decoded) => decoded,
-                    Err(_) => return Err(unauthorized_error(request_id)),
+                    Err(_) => return Err(unauthorized_basic_error(request_id)),
                 };
                 // Only the first colon separates the two halves, so a password
                 // is free to contain colons of its own.
@@ -182,10 +219,10 @@ impl Credentials {
                     Some((username, password)) => {
                         Ok(Credentials::new(String::from(username), String::from(password)))
                     }
-                    None => Err(unauthorized_error(request_id)),
+                    None => Err(unauthorized_basic_error(request_id)),
                 }
             }
-            _ => Err(unauthorized_error(request_id)),
+            _ => Err(unauthorized_basic_error(request_id)),
         }
     }
 }
@@ -497,8 +534,9 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
 /// Gives a new auth key to the user.
 ///
 /// The credentials are read from an HTTP Basic `Authorization` header, so a
-/// request has no body. A header which is missing or malformed is answered
-/// with a 401 before this handler runs.
+/// request has no body. Every 401 answer, whether the header was missing or
+/// malformed or the credentials were refused, carries the Basic challenge that
+/// `WWW-Authenticate` requires.
 #[post("/login")]
 pub async fn login(credentials: Credentials) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -518,7 +556,9 @@ pub async fn login(credentials: Credentials) -> impl Responder {
         Ok(mut conn) => {
             let user = match get_user_by_name(&un, &mut conn) {
                 Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}")),
+                Err(e) => {
+                    return with_basic_challenge(e.into_http_response(&format!("{request_id}")));
+                }
             };
 
             let hashed_password = match PasswordHash::new(user.ref_password()) {
@@ -535,7 +575,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
 
             match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
                 Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")}))),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
+                Err(e) => with_basic_challenge(e.into_http_response(&format!("{request_id}"))),
             }
         }
         Err(e) => {
@@ -859,7 +899,7 @@ mod tests {
     use crate::{build_app, core::Task};
     use actix_http::Request;
     use actix_web::get;
-    use actix_web::http::header::AUTHORIZATION;
+    use actix_web::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
     use actix_web::{App, Error, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
@@ -921,6 +961,19 @@ mod tests {
             let body = response.into_body();
             panic!("{message}: {formatted_response}{body:?}")
         }
+    }
+
+    /// Asserts that a 401 carries the challenge a Basic client needs in order
+    /// to know what to retry with.
+    fn assert_basic_challenge(response: &ServiceResponse, message: &str) {
+        assert_eq!(
+            response
+                .headers()
+                .get(WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok()),
+            Some(super::LOGIN_BASIC_CHALLENGE),
+            "{message}"
+        );
     }
 
     async fn register_and_login<E: std::fmt::Debug>(
@@ -1126,6 +1179,7 @@ mod tests {
             401,
             "Login without an Authorization header did not return 401."
         );
+        assert_basic_challenge(&response, "A missing header got no challenge.");
 
         // An auth key is not a credential pair, so the wrong scheme is refused.
         let request = test::TestRequest::post()
@@ -1138,6 +1192,7 @@ mod tests {
             401,
             "Login with a Bearer header did not return 401."
         );
+        assert_basic_challenge(&response, "A wrong scheme got no challenge.");
 
         // A token which is not base64.
         let request = test::TestRequest::post()
@@ -1150,17 +1205,57 @@ mod tests {
             401,
             "Login with an undecodable token did not return 401."
         );
+        assert_basic_challenge(&response, "An undecodable token got no challenge.");
 
         // Valid base64, but the decoded text has no colon to split on.
         let request = test::TestRequest::post()
             .uri("/login")
-            .insert_header((AUTHORIZATION, format!("Basic {}", STANDARD.encode("no-colon"))))
+            .insert_header((
+                AUTHORIZATION,
+                format!("Basic {}", STANDARD.encode("no-colon")),
+            ))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
             "Login with a token missing a colon did not return 401."
+        );
+        assert_basic_challenge(&response, "A token missing a colon got no challenge.");
+    }
+
+    #[actix_web::test]
+    async fn refused_credentials_are_challenged_too() {
+        let username = "refused-credentials-username";
+        let password = "refused-credentials-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
+
+        // The credentials were supplied and then refused, which RFC 9110 still
+        // covers with a challenge.
+        let response = login(&app, username, "not-the-correct-password").await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "Login with a wrong password did not return 401."
+        );
+        assert_basic_challenge(&response, "Refused credentials got no challenge.");
+
+        // An unknown username is *not* answered the same way: it gives a 404
+        // rather than a 401. A 404 needs no challenge, so none is sent.
+        let response = login(&app, "no-such-username", password).await;
+        assert_eq!(
+            response.status().as_u16(),
+            404,
+            "Login for an unknown user did not return 404."
+        );
+        assert!(
+            response.headers().get(WWW_AUTHENTICATE).is_none(),
+            "A 404 must not carry the Basic challenge, which belongs to 401s."
         );
     }
 
