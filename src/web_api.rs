@@ -25,8 +25,12 @@ use zeroize::ZeroizeOnDrop;
 
 /// The body shared by all error responses: the request id, plus an
 /// optional message for client errors.
-fn error_body(request_id: impl std::fmt::Display) -> String {
-    format!("{}", json!({"request_id": request_id.to_string()}))
+///
+/// It is returned as a [`serde_json::Value`] so that every response built from
+/// it can hand it straight to `HttpResponseBuilder::json`, which sets the
+/// `Content-Type` describing the body.
+fn error_body(request_id: impl std::fmt::Display) -> serde_json::Value {
+    json!({"request_id": request_id.to_string()})
 }
 
 fn error_body_with_message(request_id: impl std::fmt::Display, message: impl Serialize) -> String {
@@ -43,14 +47,14 @@ impl ApplicationError {
                 event!(Level::ERROR, "Diesel error: {e}");
                 match e {
                     diesel::result::Error::NotFound => {
-                        HttpResponse::NotFound().body(error_body(request_id))
+                        HttpResponse::NotFound().json(error_body(request_id))
                     }
-                    _ => HttpResponse::InternalServerError().body(error_body(request_id)),
+                    _ => HttpResponse::InternalServerError().json(error_body(request_id)),
                 }
             }
             ApplicationError::InvalidAuthKey => {
                 event!(Level::ERROR, "Invalid auth key");
-                HttpResponse::Unauthorized().body(error_body(request_id))
+                HttpResponse::Unauthorized().json(error_body(request_id))
             }
             ApplicationError::InvalidData(message) => {
                 event!(Level::ERROR, "Invalid data: {message}");
@@ -58,17 +62,17 @@ impl ApplicationError {
             }
             ApplicationError::InvalidPassword => {
                 event!(Level::ERROR, "Invalid password");
-                HttpResponse::Unauthorized().body(error_body(request_id))
+                HttpResponse::Unauthorized().json(error_body(request_id))
             }
             ApplicationError::QueryFailed(e) => {
                 event!(Level::ERROR, "Query failed: {e}");
-                HttpResponse::InternalServerError().body(error_body(request_id))
+                HttpResponse::InternalServerError().json(error_body(request_id))
             }
             ApplicationError::Unauthorized => {
                 event!(Level::ERROR, "Unauthorized");
-                HttpResponse::Unauthorized().body(error_body(request_id))
+                HttpResponse::Unauthorized().json(error_body(request_id))
             }
-            ApplicationError::UserExists => HttpResponse::Conflict().body(error_body(request_id)),
+            ApplicationError::UserExists => HttpResponse::Conflict().json(error_body(request_id)),
         }
     }
 }
@@ -132,7 +136,7 @@ fn unauthorized_error(request_id: Uuid) -> Error {
     event!(Level::ERROR, "Missing or malformed Authorization header");
     InternalError::from_response(
         "Missing or malformed Authorization header",
-        HttpResponse::Unauthorized().body(error_body(request_id)),
+        HttpResponse::Unauthorized().json(error_body(request_id)),
     )
     .into()
 }
@@ -164,7 +168,7 @@ fn unauthorized_basic_error(request_id: Uuid) -> Error {
     );
     InternalError::from_response(
         "Missing or malformed Basic Authorization header",
-        with_basic_challenge(HttpResponse::Unauthorized().body(error_body(request_id))),
+        with_basic_challenge(HttpResponse::Unauthorized().json(error_body(request_id))),
     )
     .into()
 }
@@ -250,7 +254,7 @@ impl FromRequest for Credentials {
 pub fn query_error_handler(err: QueryPayloadError, _req: &HttpRequest) -> Error {
     let request_id = Uuid::new_v4();
     event!(Level::ERROR, "Unable to read the query string: {err}");
-    InternalError::from_response(err, HttpResponse::BadRequest().body(error_body(request_id)))
+    InternalError::from_response(err, HttpResponse::BadRequest().json(error_body(request_id)))
         .into()
 }
 
@@ -271,7 +275,7 @@ pub async fn logout(auth_key: AuthKey) -> impl Responder {
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -301,7 +305,7 @@ pub async fn get_all_tasks(auth_key: AuthKey) -> impl Responder {
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -329,7 +333,7 @@ pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -377,7 +381,7 @@ pub async fn get_task_by_id(
                         query.id,
                         user.ref_id()
                     );
-                    HttpResponse::Unauthorized().body(error_body(request_id))
+                    HttpResponse::Unauthorized().json(error_body(request_id))
                 }
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
@@ -385,7 +389,7 @@ pub async fn get_task_by_id(
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot get task {}: not found", query.id);
-                        HttpResponse::Unauthorized().body(error_body(request_id))
+                        HttpResponse::Unauthorized().json(error_body(request_id))
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
@@ -396,7 +400,7 @@ pub async fn get_task_by_id(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -449,7 +453,7 @@ pub async fn get_task_shares(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -490,7 +494,7 @@ pub async fn get_user_by_id(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -516,7 +520,7 @@ pub async fn whoami(auth_key: AuthKey) -> impl Responder {
                 Level::ERROR,
                 "Unable to establish connection to database: {e}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -568,7 +572,7 @@ pub async fn add_task(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -610,7 +614,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
                         "Unable to parse hashed password ({}): {e:?}",
                         user.ref_password()
                     );
-                    return HttpResponse::InternalServerError().body(error_body(request_id));
+                    return HttpResponse::InternalServerError().json(error_body(request_id));
                 }
             };
 
@@ -624,7 +628,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
                 Level::ERROR,
                 "Unable to establish connection to database: {e}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -653,7 +657,7 @@ pub async fn register_account(
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().body(error_body(request_id));
+            return HttpResponse::BadRequest().json(error_body(request_id));
         }
     };
     let pw = CleartextPassword::new(std::mem::take(&mut account_info.password));
@@ -666,7 +670,7 @@ pub async fn register_account(
         Ok(h) => h.to_string(),
         Err(e) => {
             event!(Level::ERROR, "Unable to hash password: {e:?}");
-            return HttpResponse::InternalServerError().body(error_body(request_id));
+            return HttpResponse::InternalServerError().json(error_body(request_id));
         }
     };
 
@@ -685,7 +689,7 @@ pub async fn register_account(
                 Level::ERROR,
                 "Unable to establish connection to database: {e}."
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -736,7 +740,7 @@ pub async fn share_task(
             };
 
             match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
-                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
+                Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
                 // Unauthorized covers both "task doesn't exist" and "not
                 // your task", so the 401 doesn't reveal which.
                 Err(e) => e.into_http_response(&format!("{request_id}")),
@@ -747,7 +751,7 @@ pub async fn share_task(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -828,14 +832,14 @@ pub async fn update_task_by_id(
                 description,
                 &mut connection,
             ) {
-                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
+                Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
                     // task": both are the same 401 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
-                        HttpResponse::Unauthorized().body(error_body(request_id))
+                        HttpResponse::Unauthorized().json(error_body(request_id))
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
@@ -846,7 +850,7 @@ pub async fn update_task_by_id(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
@@ -884,7 +888,7 @@ pub async fn unshare_task(
             };
 
             match remove_share(&owner, &payload.id, &target, &mut connection) {
-                Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
+                Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -893,7 +897,7 @@ pub async fn unshare_task(
                 Level::ERROR,
                 "Unable to establish connection to database: {e:?}"
             );
-            HttpResponse::InternalServerError().body(error_body(request_id))
+            HttpResponse::InternalServerError().json(error_body(request_id))
         }
     }
 }
