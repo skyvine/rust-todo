@@ -411,6 +411,51 @@ pub async fn is_alive() -> impl Responder {
     HttpResponse::Ok()
 }
 
+/// The query `GET /task_shares` reads the task id from.
+#[derive(Deserialize)]
+struct TaskSharesQuery {
+    id: i32,
+}
+
+/// Lists the shares on a task owned by the caller.
+#[get("/task_shares")]
+pub async fn get_task_shares(
+    auth_key: AuthKey,
+    query: actix_web::web::Query<TaskSharesQuery>,
+) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Get Task Shares", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match list_shares_for_task(&owner, &query.id, &mut connection) {
+                Ok(shares) => {
+                    let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
+                        json!({"username": s.username(), "permission": s.permission().as_stored_text()})
+                    }).collect();
+                    HttpResponse::Ok().body(format!(
+                        "{}",
+                        json!({"request_id": format!("{request_id}"), "shares": shares})
+                    ))
+                }
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
+            HttpResponse::InternalServerError().body(error_body(request_id))
+        }
+    }
+}
+
 /// The query `GET /user_by_id` reads the user id from.
 #[derive(Deserialize)]
 struct UserByIdQuery {
@@ -833,51 +878,6 @@ pub async fn unshare_task(auth_key: AuthKey, mut payload: actix_web::web::Json<U
 
             match remove_share(&owner, &payload.id, &target, &mut connection) {
                 Ok(()) => HttpResponse::Ok().body(error_body(request_id)),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
-        }
-        Err(e) => {
-            event!(
-                Level::ERROR,
-                "Unable to establish connection to database: {e:?}"
-            );
-            HttpResponse::InternalServerError().body(error_body(request_id))
-        }
-    }
-}
-
-/// The query `GET /task_shares` reads the task id from.
-#[derive(Deserialize)]
-struct TaskSharesQuery {
-    id: i32,
-}
-
-/// Lists the shares on a task owned by the caller.
-#[get("/task_shares")]
-pub async fn get_task_shares(
-    auth_key: AuthKey,
-    query: actix_web::web::Query<TaskSharesQuery>,
-) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Get Task Shares", %request_id).entered();
-
-    match establish_connection() {
-        Ok(mut connection) => {
-            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
-                Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}")),
-            };
-
-            match list_shares_for_task(&owner, &query.id, &mut connection) {
-                Ok(shares) => {
-                    let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
-                        json!({"username": s.username(), "permission": s.permission().as_stored_text()})
-                    }).collect();
-                    HttpResponse::Ok().body(format!(
-                        "{}",
-                        json!({"request_id": format!("{request_id}"), "shares": shares})
-                    ))
-                }
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
