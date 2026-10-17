@@ -97,7 +97,7 @@ impl AuthKey {
         let key = words.next();
         let end = words.next();
 
-        if scheme.is_some() && scheme.unwrap().eq_ignore_ascii_case(BEARER_SCHEME) {
+        if scheme.is_some() && !scheme.unwrap().eq_ignore_ascii_case(BEARER_SCHEME) {
             event!(Level::ERROR, "Incorrect scheme \"{:?}\"", scheme);
         }
 
