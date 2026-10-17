@@ -495,7 +495,10 @@ pub async fn get_task_by_id(
                         query.id,
                         user.ref_id()
                     );
-                    HttpResponse::Unauthorized().json(error_body(request_id))
+                    with_challenge(
+                        HttpResponse::Unauthorized().json(error_body(request_id)),
+                        BEARER_CHALLENGE,
+                    )
                 }
                 Err(e) => match e {
                     // Don't distinguish "task doesn't exist" from "not your
@@ -503,7 +506,10 @@ pub async fn get_task_by_id(
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
                         event!(Level::ERROR, "Cannot get task {}: not found", query.id);
-                        HttpResponse::Unauthorized().json(error_body(request_id))
+                        with_challenge(
+                            HttpResponse::Unauthorized().json(error_body(request_id)),
+                            BEARER_CHALLENGE,
+                        )
                     }
                     other => other.into_http_response(&format!("{request_id}")),
                 },
