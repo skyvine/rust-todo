@@ -24,6 +24,15 @@ docker run -e DATABASE_URL=postgres://postgres:test-password@localhost/todo --ne
 All data is sent and received as JSON. All responses (aside from is\_alive) additionally
 include a request\_id key which uniquely identifies the request.
 
+Every endpoint which takes an auth\_key requires it in the `Authorization: Bearer <auth_key>`
+header. RFC 9110 asks every 401 to name the scheme the client may retry with, so those
+endpoints answer a rejected request with `WWW-Authenticate: Bearer realm="todo"`, plus
+the RFC 6750 error code which says what to do next: `error="invalid_request"` when the
+header was missing or malformed, and `error="invalid_token"` when an auth key was
+presented but is unknown or expired. Only one challenge is sent, so the realm is sent
+on its own where no error code applies. `/login`, the one endpoint which takes credentials
+rather than an auth key, answers its own 401s with the Basic challenge instead.
+
 ### DELETE
 
 - /logout: Disable an auth key
@@ -86,6 +95,7 @@ include a request\_id key which uniquely identifies the request.
     header and no request body; the username and password are the ones belonging to the account.
   - Failures: Every 401 answer carries a `WWW-Authenticate: Basic realm="todo", charset="UTF-8"`
     challenge, as RFC 9110 requires, whether the header was missing or malformed or the credentials were refused.
+    No other endpoint answers with this challenge: they take an auth key, so they name the Bearer scheme instead.
   - Output keys:
     - auth\_key [string]: The auth\_key which can be used for requests that require authentication
 - /add\_task: Creates a new task
