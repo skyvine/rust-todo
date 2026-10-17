@@ -319,10 +319,8 @@ pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
             };
 
             match get_incomplete_tasks_for_user(&user, &mut connection) {
-                Ok(tasks) => HttpResponse::Ok().body(format!(
-                    "{}",
-                    json!({"request_id": format!("{request_id}"), "tasks": tasks})
-                )),
+                Ok(tasks) => HttpResponse::Ok()
+                    .json(json!({"request_id": format!("{request_id}"), "tasks": tasks})),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
