@@ -101,6 +101,13 @@ const BASIC_SCHEME: &str = "Basic";
 /// as.
 const LOGIN_BASIC_CHALLENGE: &str = "Basic realm=\"todo\", charset=\"UTF-8\"";
 
+/// The challenge for a request whose `Authorization` header was missing or
+/// malformed, so no auth key ever reached the server to be judged.
+///
+/// RFC 6750 §3.1 calls this `invalid_request`, and its advice is to fix the
+/// request rather than to get new credentials.
+const BEARER_INVALID_REQUEST_CHALLENGE: &str = "Bearer realm=\"todo\", error=\"invalid_request\"";
+
 impl AuthKey {
     /// Reads the key out of an `Authorization` header.
     ///
@@ -152,7 +159,10 @@ fn unauthorized_error(request_id: Uuid) -> Error {
     );
     InternalError::from_response(
         "Missing or malformed Authorization header",
-        HttpResponse::Unauthorized().json(error_body(request_id)),
+        with_challenge(
+            HttpResponse::Unauthorized().json(error_body(request_id)),
+            BEARER_INVALID_REQUEST_CHALLENGE,
+        ),
     )
     .into()
 }
