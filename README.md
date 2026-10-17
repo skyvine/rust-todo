@@ -95,6 +95,14 @@ include a request\_id key which uniquely identifies the request.
     - description \[string] (optional): A description of the task (could be long)
   - Output keys:
     - id [number]: A unique identifier for the task.
+- /share\_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
+  - Input keys:
+    - auth\_key [string]: An auth key as returned by the login endpoint.
+    - id [number]: The id of the task to share.
+    - username [string]: The username of the user to share with.
+    - permission [string]: Either "read" or "read\_write".
+### PATCH
+
 - /task\_by\_id: Changes some or all of the data contained in a task. Read-write shared access is honored: a user with a `read\_write` share may update the task.
   - Input keys:
     - auth\_key [string]: An auth key as returned by the login endpoint.
@@ -102,12 +110,6 @@ include a request\_id key which uniquely identifies the request.
     - completed \[bool] (optional): The new completed status of the task.
     - title \[string] (optional): The new title of the task.
     - description \[string] (optional): The new description of the task.
-- /share\_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the task to share.
-    - username [string]: The username of the user to share with.
-    - permission [string]: Either "read" or "read\_write".
 
 ## Directory Map
 - .github/workflows/\*:

@@ -8,7 +8,7 @@ use crate::domain_types::{AuthKey, CleartextPassword, Credentials, TaskDescripti
 use actix_web::{
     Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::QueryPayloadError,
 };
-use actix_web::{HttpResponse, Responder, delete, get, post};
+use actix_web::{HttpResponse, Responder, delete, get, patch, post};
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, SaltString, rand_core::OsRng},
@@ -693,6 +693,8 @@ pub async fn register_account(
     }
 }
 
+// PATCH endpoints
+
 /// The fields a client may change on an existing task.
 ///
 /// `Default` + `PartialEq` let us check for "no changes requested" without
@@ -716,7 +718,7 @@ struct UpdateTaskPayload {
 ///
 /// It is an error for all of the optional values to be None; at least on field must be updated for
 /// this endpoint to succeed.
-#[post("/task_by_id")]
+#[patch("/task_by_id")]
 pub async fn update_task_by_id(
     auth_key: AuthKey,
     mut payload: actix_web::web::Json<UpdateTaskPayload>,
@@ -1452,7 +1454,7 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: -1,
@@ -1490,7 +1492,7 @@ mod tests {
         );
         let task_id = extract_json_i32(add_task_response, "task_id");
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: task_id,
@@ -1583,7 +1585,7 @@ mod tests {
         );
         let second_task_id = extract_json_i32(second_add_response, "task_id");
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: first_task_id,
@@ -1671,7 +1673,7 @@ mod tests {
         );
         let second_task_id = extract_json_i32(second_add_task_response, "task_id");
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: second_task_id,
@@ -1982,7 +1984,7 @@ mod tests {
             "Share request failed",
         );
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: task_id,
@@ -2033,7 +2035,7 @@ mod tests {
             "Share request failed",
         );
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: task_id,
@@ -2084,7 +2086,7 @@ mod tests {
         );
         let task_id = extract_json_i32(add_response, "task_id");
 
-        let update_request = test::TestRequest::post()
+        let update_request = test::TestRequest::patch()
             .uri("/task_by_id")
             .set_json(super::UpdateTaskPayload {
                 id: task_id,

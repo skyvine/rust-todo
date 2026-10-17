@@ -1,0 +1,11 @@
+PATCH /task_by_id HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Authorization: Bearer manual-auth-key
+Content-Type: application/json; charset=utf-8
+Content-Length: 33
+
+{
+	"id": 1,
+	"completed": true
+}
