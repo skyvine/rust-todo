@@ -558,10 +558,8 @@ pub async fn add_task(
             };
 
             match crate::core::add_task(&owner, &title, false, description, &mut connection) {
-                Ok(task) => HttpResponse::Created().body(format!(
-                    "{}",
-                    json!({"request_id": format!("{request_id}"), "task_id": task.id()})
-                )),
+                Ok(task) => HttpResponse::Created()
+                    .json(json!({"request_id": format!("{request_id}"), "task_id": task.id()})),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
