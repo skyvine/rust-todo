@@ -8,7 +8,8 @@ use crate::domain_types::{
 };
 
 use actix_web::{
-    Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::QueryPayloadError,
+    Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::JsonPayloadError,
+    error::QueryPayloadError,
 };
 use actix_web::{HttpResponse, Responder, delete, get, patch, post};
 use argon2::{
@@ -260,6 +261,20 @@ impl FromRequest for Credentials {
 pub fn query_error_handler(err: QueryPayloadError, _req: &HttpRequest) -> Error {
     let request_id = Uuid::new_v4();
     event!(Level::ERROR, "Unable to read the query string: {err}");
+    InternalError::from_response(err, HttpResponse::BadRequest().json(error_body(request_id)))
+        .into()
+}
+
+/// Turns a request body actix refuses to deserialize as JSON into the same
+/// JSON error body as the rest of the API, instead of an empty body.
+///
+/// Registered app-wide in `build_app!` as the `JsonConfig` error handler.
+pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> Error {
+    let request_id = Uuid::new_v4();
+    event!(
+        Level::ERROR,
+        "Unable to read the request body as JSON: {err}"
+    );
     InternalError::from_response(err, HttpResponse::BadRequest().json(error_body(request_id)))
         .into()
 }

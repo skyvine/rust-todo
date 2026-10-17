@@ -12,6 +12,7 @@ macro_rules! build_app {
             .app_data(
                 web::QueryConfig::default().error_handler(crate::web_api::query_error_handler),
             )
+            .app_data(web::JsonConfig::default().error_handler(crate::web_api::json_error_handler))
             .service(crate::web_api::add_task)
             .service(crate::web_api::get_all_tasks)
             .service(crate::web_api::get_incomplete_tasks)
