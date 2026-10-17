@@ -3,3 +3,5 @@ The test suite requires a running postgresql server. You can create one with the
 There are currently no clients using this API.
 
 When running `cargo clippy`, always use the `--all-targets` flag.
+
+Do not run any git commands unless explicitly instructed to do so.
