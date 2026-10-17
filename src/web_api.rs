@@ -2634,12 +2634,4 @@ mod tests {
             "An empty body has no representation to describe."
         );
     }
-
-    // Shared extractor tests
-
-    /// The query the endpoints read their task or user id from.
-    #[derive(Deserialize)]
-    struct IdQuery {
-        id: i32,
-    }
 }
