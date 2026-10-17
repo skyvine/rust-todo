@@ -615,7 +615,7 @@ pub async fn login(credentials: Credentials) -> impl Responder {
             };
 
             match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
-                Ok(auth_key) => HttpResponse::Ok().body(format!("{}", json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")}))),
+                Ok(auth_key) => HttpResponse::Ok().json(json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")})),
                 Err(e) => with_basic_challenge(e.into_http_response(&format!("{request_id}"))),
             }
         }
