@@ -82,9 +82,8 @@ include a request\_id key which uniquely identifies the request.
     - username [string]: The username for the new account. Must not already exist.
     - password [string]: The password for the new account.
 - /login: Generates a new auth key which can be used in future requests.
-  - Input keys:
-    - username [string]: The username to log in with.
-    - password [string]: The password associated with the user
+  - Authentication: HTTP Basic. Send an `Authorization: Basic <base64(username:password)>`
+    header and no request body; the username and password are the ones belonging to the account.
   - Output keys:
     - auth\_key [string]: The auth\_key which can be used for requests that require authentication
 - /add\_task: Creates a new task

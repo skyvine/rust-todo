@@ -1413,6 +1413,7 @@ dependencies = [
  "actix-http",
  "actix-web",
  "argon2",
+ "base64",
  "clap",
  "ctor",
  "diesel",

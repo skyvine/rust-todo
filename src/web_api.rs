@@ -3,7 +3,7 @@ use crate::core::{
     establish_connection, get_incomplete_tasks_for_user, get_new_auth_key, get_task_permission,
     get_user_by_name, list_shares_for_task, remove_share,
 };
-use crate::domain_types::{AuthKey, CleartextPassword, TaskDescription, TaskTitle, Username};
+use crate::domain_types::{AuthKey, CleartextPassword, Credentials, TaskDescription, TaskTitle, Username};
 
 use actix_web::{
     Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::QueryPayloadError,
@@ -13,6 +13,7 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, SaltString, rand_core::OsRng},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::future::{Ready, ready};
@@ -75,6 +76,10 @@ impl ApplicationError {
 /// The scheme an `Authorization` header must use to carry an auth key.
 const BEARER_SCHEME: &str = "Bearer";
 
+/// The scheme an `Authorization` header must use to carry a username and a
+/// password.
+const BASIC_SCHEME: &str = "Basic";
+
 impl AuthKey {
     /// Reads the key out of an `Authorization` header.
     ///
@@ -131,6 +136,67 @@ impl FromRequest for AuthKey {
         // generated here rather than alongside the handler's own span.
         let request_id = Uuid::new_v4();
         ready(AuthKey::from_header(req, request_id))
+    }
+}
+
+impl Credentials {
+    /// Reads a username and a password out of an `Authorization` header.
+    ///
+    /// The header is exactly `Basic <base64(username:password)>`: a missing
+    /// header, another scheme, a token which is not base64 or valid UTF-8, a
+    /// token without a colon and a trailing word are all malformed.
+    fn from_header(req: &HttpRequest, request_id: Uuid) -> Result<Self, Error> {
+        let mut words = req
+            .headers()
+            .get(actix_web::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .split_whitespace();
+
+        let scheme = words.next();
+        let encoded = words.next();
+        let end = words.next();
+
+        if scheme.is_some() && !scheme.unwrap().eq_ignore_ascii_case(BASIC_SCHEME) {
+            event!(Level::ERROR, "Incorrect scheme \"{:?}\"", scheme);
+        }
+
+        if end.is_some() {
+            event!(Level::ERROR, "Extra token after credentials: {:?}", end);
+        }
+
+        match (scheme, encoded, end) {
+            // Schemes are case insensitive, so `basic` is `Basic` as well.
+            (Some(scheme), Some(encoded), None) if scheme.eq_ignore_ascii_case(BASIC_SCHEME) => {
+                let decoded = match STANDARD.decode(encoded) {
+                    Ok(decoded) => decoded,
+                    Err(_) => return Err(unauthorized_error(request_id)),
+                };
+                let decoded = match String::from_utf8(decoded) {
+                    Ok(decoded) => decoded,
+                    Err(_) => return Err(unauthorized_error(request_id)),
+                };
+                // Only the first colon separates the two halves, so a password
+                // is free to contain colons of its own.
+                match decoded.split_once(':') {
+                    Some((username, password)) => {
+                        Ok(Credentials::new(String::from(username), String::from(password)))
+                    }
+                    None => Err(unauthorized_error(request_id)),
+                }
+            }
+            _ => Err(unauthorized_error(request_id)),
+        }
+    }
+}
+
+impl FromRequest for Credentials {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        let request_id = Uuid::new_v4();
+        ready(Credentials::from_header(req, request_id))
     }
 }
 
@@ -428,19 +494,19 @@ pub async fn add_task(mut payload: actix_web::web::Json<AddTaskPayload>) -> impl
         }
     }
 }
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct LoginPayload {
-    username: String,
-    password: String,
-}
-
 /// Gives a new auth key to the user.
+///
+/// The credentials are read from an HTTP Basic `Authorization` header, so a
+/// request has no body. A header which is missing or malformed is answered
+/// with a 401 before this handler runs.
 #[post("/login")]
-pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Responder {
+pub async fn login(credentials: Credentials) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
 
-    let un = match Username::new(std::mem::take(&mut payload.username)) {
+    let (raw_username, raw_password) = credentials.into_parts();
+
+    let un = match Username::new(raw_username) {
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
@@ -448,7 +514,7 @@ pub async fn login(mut payload: actix_web::web::Json<LoginPayload>) -> impl Resp
         }
     };
 
-    let pw = CleartextPassword::new(std::mem::take(&mut payload.password));
+    let pw = CleartextPassword::new(raw_password);
 
     match establish_connection() {
         Ok(mut conn) => {
@@ -797,6 +863,7 @@ mod tests {
     use actix_web::get;
     use actix_web::http::header::AUTHORIZATION;
     use actix_web::{App, Error, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
     use serde::Deserialize;
     use tracing_subscriber::{EnvFilter, fmt};
@@ -892,12 +959,10 @@ mod tests {
         username: &str,
         password: &str,
     ) -> ServiceResponse {
+        let credentials = STANDARD.encode(format!("{username}:{password}"));
         let request = test::TestRequest::post()
             .uri("/login")
-            .set_json(super::LoginPayload {
-                username: String::from(username),
-                password: String::from(password),
-            })
+            .insert_header((AUTHORIZATION, format!("Basic {credentials}")))
             .to_request();
         test::call_service(&app, request).await
     }
@@ -1049,6 +1114,78 @@ mod tests {
 
         let response = login(&app, username, "not-the-correct-password").await;
         assert_client_error(response, "Response did not indicate client error");
+    }
+
+    #[actix_web::test]
+    async fn login_requires_basic_authorization_header() {
+        let app = test::init_service(build_app!()).await;
+
+        // No Authorization header at all.
+        let request = test::TestRequest::post().uri("/login").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "Login without an Authorization header did not return 401."
+        );
+
+        // An auth key is not a credential pair, so the wrong scheme is refused.
+        let request = test::TestRequest::post()
+            .uri("/login")
+            .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "Login with a Bearer header did not return 401."
+        );
+
+        // A token which is not base64.
+        let request = test::TestRequest::post()
+            .uri("/login")
+            .insert_header((AUTHORIZATION, "Basic not-valid-base64!"))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "Login with an undecodable token did not return 401."
+        );
+
+        // Valid base64, but the decoded text has no colon to split on.
+        let request = test::TestRequest::post()
+            .uri("/login")
+            .insert_header((AUTHORIZATION, format!("Basic {}", STANDARD.encode("no-colon"))))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "Login with a token missing a colon did not return 401."
+        );
+    }
+
+    #[actix_web::test]
+    async fn login_password_may_contain_a_colon() {
+        let username = "colon-password-username";
+        let password = "colon:password:with:colons";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        let whoami_request = test::TestRequest::get()
+            .uri("/whoami")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let whoami_response = assert_response_success(
+            test::call_service(&app, whoami_request).await,
+            "Whoami request failed.",
+        );
+        assert_eq!(
+            extract_json_string(whoami_response, "username"),
+            username
+        );
     }
 
     #[actix_web::test]

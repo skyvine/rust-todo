@@ -19,6 +19,34 @@ impl AuthKey {
     }
 }
 
+/// A username and password pair, taken from an HTTP Basic `Authorization`
+/// header.
+///
+/// Both halves are secrets, so the whole struct is zeroized as soon as the
+/// request is done with it.
+#[derive(ZeroizeOnDrop)]
+pub(crate) struct Credentials {
+    username: String,
+    password: String,
+}
+
+impl Credentials {
+    pub(crate) fn new(username: String, password: String) -> Self {
+        Self { username, password }
+    }
+
+    /// Hands the username and the password over to the handler.
+    ///
+    /// The fields are emptied rather than moved out, so that the zeroizing
+    /// `Drop` impl still has a well defined struct to work on.
+    pub(crate) fn into_parts(mut self) -> (String, String) {
+        (
+            std::mem::take(&mut self.username),
+            std::mem::take(&mut self.password),
+        )
+    }
+}
+
 #[derive(ZeroizeOnDrop)]
 pub(crate) struct CleartextPassword(String);
 

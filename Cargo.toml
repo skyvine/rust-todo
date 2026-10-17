@@ -7,6 +7,7 @@ edition = "2024"
 actix-http = { version = "3.11.0", features = ["rustls"] }
 actix-web = "4.11.0"
 argon2 = "0.5.3"
+base64 = "0.22.1"
 clap = { version = "4.5.40", features = ["derive"] }
 ctor = "0.4.2"
 diesel = { version = "2.2.11", features = ["postgres"] }
