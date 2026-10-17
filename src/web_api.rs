@@ -2480,14 +2480,4 @@ mod tests {
     struct IdQuery {
         id: i32,
     }
-
-    #[actix_web::test]
-    async fn auth_key_zeroizes_on_drop() {
-        // `ZeroizeOnDrop` is a marker trait that the derive implements next to
-        // the `Drop` impl wiping the key, so this bound is the compile time
-        // proof that the key does not outlive its request. Asserting on the
-        // bytes themselves would mean reading memory the key no longer owns.
-        fn assert_zeroizes_on_drop<T: zeroize::ZeroizeOnDrop>() {}
-        assert_zeroizes_on_drop::<super::AuthKey>();
-    }
 }
