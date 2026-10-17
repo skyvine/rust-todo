@@ -927,7 +927,7 @@ pub async fn unshare_task(
 mod tests {
     use crate::{build_app, core::Task};
     use actix_http::Request;
-    use actix_web::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+    use actix_web::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
     use actix_web::{App, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
@@ -1011,6 +1011,19 @@ mod tests {
         assert!(
             Uuid::parse_str(&request_id).is_ok(),
             "{request_id:?} is not a request id."
+        );
+    }
+
+    /// Asserts that a response describes its body as JSON, so a client never
+    /// has to guess the media type.
+    fn assert_json_content_type(response: &ServiceResponse, message: &str) {
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "{message}"
         );
     }
 
@@ -2505,6 +2518,63 @@ mod tests {
             assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
             assert_json_error_with_request_id(response);
         }
+    }
+
+    #[actix_web::test]
+    async fn json_bodies_are_declared_as_json() {
+        let username = "json-media-type-username";
+        let password = "json-media-type-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        // A success with a body.
+        let add_task_response = assert_response_success(
+            add_task(&app, &auth_key, "test title", Some("test description")).await,
+            "Unable to add task.",
+        );
+        assert_json_content_type(&add_task_response, "/add_task said nothing about its body.");
+
+        // A 400 from the query string extractor.
+        let request = test::TestRequest::get()
+            .uri("/task_by_id?id=not-a-number")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            400,
+            "/task_by_id should be a 400."
+        );
+        assert_json_content_type(&response, "The 400 said nothing about its body.");
+
+        // A 400 from the JSON body extractor.
+        let request = test::TestRequest::post()
+            .uri("/add_task")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .insert_header((CONTENT_TYPE, "application/json"))
+            .set_payload("this is not JSON")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            400,
+            "A malformed request body should be a 400."
+        );
+        assert_json_content_type(
+            &response,
+            "The malformed body 400 said nothing about its body.",
+        );
+
+        // A 401.
+        let request = test::TestRequest::get().uri("/whoami").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "/whoami without a key is a 401."
+        );
+        assert_json_content_type(&response, "The 401 said nothing about its body.");
     }
 
     // Shared extractor tests
