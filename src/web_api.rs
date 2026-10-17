@@ -3,7 +3,9 @@ use crate::core::{
     establish_connection, get_incomplete_tasks_for_user, get_new_auth_key, get_task_permission,
     get_user_by_name, list_shares_for_task, remove_share,
 };
-use crate::domain_types::{AuthKey, CleartextPassword, Credentials, TaskDescription, TaskTitle, Username};
+use crate::domain_types::{
+    AuthKey, CleartextPassword, Credentials, TaskDescription, TaskTitle, Username,
+};
 
 use actix_web::{
     Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::QueryPayloadError,
@@ -156,7 +158,10 @@ fn with_basic_challenge(mut response: HttpResponse) -> HttpResponse {
 /// challenge which tells the client which scheme to retry with.
 fn unauthorized_basic_error(request_id: Uuid) -> Error {
     // The header itself is deliberately not logged: it carries the password.
-    event!(Level::ERROR, "Missing or malformed Basic Authorization header");
+    event!(
+        Level::ERROR,
+        "Missing or malformed Basic Authorization header"
+    );
     InternalError::from_response(
         "Missing or malformed Basic Authorization header",
         with_basic_challenge(HttpResponse::Unauthorized().body(error_body(request_id))),
@@ -216,9 +221,10 @@ impl Credentials {
                 // Only the first colon separates the two halves, so a password
                 // is free to contain colons of its own.
                 match decoded.split_once(':') {
-                    Some((username, password)) => {
-                        Ok(Credentials::new(String::from(username), String::from(password)))
-                    }
+                    Some((username, password)) => Ok(Credentials::new(
+                        String::from(username),
+                        String::from(password),
+                    )),
                     None => Err(unauthorized_basic_error(request_id)),
                 }
             }
@@ -537,7 +543,10 @@ struct AddTaskPayload {
 ///
 /// "Completed" defaults to "false"
 #[post("/add_task")]
-pub async fn add_task(auth_key: AuthKey, mut payload: actix_web::web::Json<AddTaskPayload>) -> impl Responder {
+pub async fn add_task(
+    auth_key: AuthKey,
+    mut payload: actix_web::web::Json<AddTaskPayload>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Add Task", %request_id).entered();
 
@@ -705,7 +714,10 @@ struct ShareTaskPayload {
 /// Grants another user access to a task owned by the caller, or replaces
 /// the permission on an existing share.
 #[post("/share_task")]
-pub async fn share_task(auth_key: AuthKey, mut payload: actix_web::web::Json<ShareTaskPayload>) -> impl Responder {
+pub async fn share_task(
+    auth_key: AuthKey,
+    mut payload: actix_web::web::Json<ShareTaskPayload>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Share Task", %request_id).entered();
 
@@ -861,7 +873,10 @@ struct UnshareTaskPayload {
 
 /// Removes another user's access to a task owned by the caller.
 #[delete("/unshare_task")]
-pub async fn unshare_task(auth_key: AuthKey, mut payload: actix_web::web::Json<UnshareTaskPayload>) -> impl Responder {
+pub async fn unshare_task(
+    auth_key: AuthKey,
+    mut payload: actix_web::web::Json<UnshareTaskPayload>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Unshare Task", %request_id).entered();
 
@@ -985,7 +1000,6 @@ mod tests {
             "{request_id:?} is not a request id."
         );
     }
-
 
     async fn register_and_login<E: std::fmt::Debug>(
         app: impl Service<Request, Response = ServiceResponse, Error = E>,
@@ -1286,10 +1300,7 @@ mod tests {
             test::call_service(&app, whoami_request).await,
             "Whoami request failed.",
         );
-        assert_eq!(
-            extract_json_string(whoami_response, "username"),
-            username
-        );
+        assert_eq!(extract_json_string(whoami_response, "username"), username);
     }
 
     #[actix_web::test]
