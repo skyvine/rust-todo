@@ -58,9 +58,7 @@ and is answered as one.
 
 A task is one resource at one URI, `/tasks/{id}`, and the id is part of the path rather
 than a query parameter or a body field, so every operation on a task addresses it the
-same way. Requests and responses are JSON. The task representation is an object that can
-be deserialized by `Task::from_json_object`, holding `id`, `owner`, `title`,
-`description`, and `completed`.
+same way. Requests and responses are JSON.
 
 Tasks cannot be deleted. There is no `DELETE /tasks/{id}`: a task is created, read, and
 changed, and nothing removes it.
