@@ -5,3 +5,5 @@ There are currently no clients using this API.
 When running `cargo clippy`, always use the `--all-targets` flag.
 
 Do not run any git commands unless explicitly instructed to do so.
+
+Do not delete completed tickets unless explicitly instructed to do so.
