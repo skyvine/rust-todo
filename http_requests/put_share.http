@@ -1,0 +1,14 @@
+# Assigns a permission to a share at the share's own URI. The first time it
+# is sent it creates the share and answers 201 with a Location naming it; every
+# time after it replaces the permission already there and answers 200. Either
+# way the request is idempotent, and the status is what tells the two apart.
+PUT /tasks/1/shares/manual-name HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Authorization: Bearer manual-auth-key
+Content-Type: application/json; charset=utf-8
+Content-Length: 31
+
+{
+	"permission": "read_write"
+}

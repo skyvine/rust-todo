@@ -705,21 +705,96 @@ fn require_task_owner(
     }
 }
 
-/// Grant `target` access to the caller's task, or replace the existing
-/// permission if a share row already exists (upsert semantics).
+/// What a write to a share's URI did.
+///
+/// A `PUT` on `/tasks/{id}/shares/{username}` is a single assignment which
+/// either creates the share or replaces the permission on one which was
+/// already there, and the two are different answers to the same request:
+/// RFC 9110 §9.3.4 has a created resource answered with `201 Created` and a
+/// `Location`, and a replaced one with `200 OK`. `Result<(), _>` cannot
+/// report that, so the share itself and which case it was travel together.
+#[derive(Clone, Debug)]
+pub enum ShareWrite {
+    Created(Share),
+    Replaced(Share),
+}
+
+impl ShareWrite {
+    /// The share as it stands after the write, whichever case it was.
+    pub fn share(&self) -> &Share {
+        match self {
+            ShareWrite::Created(share) => share,
+            ShareWrite::Replaced(share) => share,
+        }
+    }
+}
+
+/// Assign `permission` to `target` on the caller's task, at the share's own
+/// URI: the share is created if it is not there, and its permission is
+/// replaced if it is.
+///
+/// Which of the two happened is answered by the database itself rather than
+/// guessed from a query which cannot report it: `ON CONFLICT DO NOTHING ...
+/// RETURNING` returns a row only when the row was actually inserted, so an
+/// insert which returns nothing is a share which already existed.
 pub fn add_share_for_task(
     owner: &User,
     task_id: &i32,
     target: &Username,
     permission: SharePermission,
     connection: &mut PgConnection,
-) -> Result<(), ApplicationError> {
+) -> Result<ShareWrite, ApplicationError> {
     require_task_owner(owner, task_id, connection)?;
 
     // Unknown target username: 404. That's acceptable because usernames
     // are public information, and sharing requires naming the target user.
     let target_user = get_user_by_name(target, connection)?;
 
+    // The two statements below cannot be one without a transaction, and the
+    // race between them needs another write to this same share to fall inside
+    // it. Rather than report the wrong one of the two cases for such a
+    // request, the pair is run twice: the retry finds whatever the other
+    // request left behind and reports what is true then. Two attempts is
+    // enough because the other request has to win the race twice in a row to
+    // be answered wrongly again.
+    for _ in 0..2 {
+        match insert_share_if_absent(task_id, &target_user, permission, connection)? {
+            Some(row) => {
+                event!(Level::TRACE, "Query succeeded: the share was created");
+                return Ok(ShareWrite::Created(Share::from_row(&row, &target_user)));
+            }
+            None => {
+                match replace_share_permission(task_id, &target_user, permission, connection)? {
+                    Some(row) => {
+                        event!(Level::TRACE, "Query succeeded: the permission was replaced");
+                        return Ok(ShareWrite::Replaced(Share::from_row(&row, &target_user)));
+                    }
+                    // The row was removed by the other write after all, so there is
+                    // nothing to replace and the insert above is worth repeating.
+                    None => continue,
+                }
+            }
+        }
+    }
+
+    event!(
+        Level::ERROR,
+        "The share row kept changing underneath the write"
+    );
+    Err(ApplicationError::QueryFailed(String::from(
+        "Unable to write the share: it changed between both attempts",
+    )))
+}
+
+/// Create the share row unless one is already there, and report which
+/// happened: a row comes back only if this statement inserted one, since a
+/// conflicting insert does nothing and returns nothing.
+fn insert_share_if_absent(
+    task_id: &i32,
+    target_user: &User,
+    permission: SharePermission,
+    connection: &mut PgConnection,
+) -> Result<Option<TaskShare>, ApplicationError> {
     use crate::schema::task_shares::dsl::{self, task_shares};
 
     let query = diesel::insert_into(task_shares)
@@ -729,8 +804,8 @@ pub fn add_share_for_task(
             dsl::permission.eq(permission),
         ))
         .on_conflict((dsl::task_id, dsl::user_id))
-        .do_update()
-        .set(dsl::permission.eq(permission));
+        .do_nothing()
+        .returning(TaskShare::as_select());
 
     event!(
         Level::TRACE,
@@ -738,11 +813,47 @@ pub fn add_share_for_task(
         diesel::debug_query::<diesel::pg::Pg, _>(&query)
     );
 
-    match query.execute(connection) {
-        Ok(_) => {
-            event!(Level::TRACE, "Query succeeded");
-            Ok(())
+    match query.get_result::<TaskShare>(connection) {
+        Ok(row) => Ok(Some(row)),
+        // The conflict the insert refused to touch: the share is already there.
+        Err(diesel::result::Error::NotFound) => Ok(None),
+        Err(e) => {
+            event!(Level::ERROR, "Query Failed: {e}");
+            Err(ApplicationError::DieselError(e))
         }
+    }
+}
+
+/// Set the permission on the share row, and report whether there was one to
+/// set it on.
+///
+/// An absent row is not a failure here: the caller asked for this permission
+/// to be the share's, whether or not the share was there to have it.
+fn replace_share_permission(
+    task_id: &i32,
+    target_user: &User,
+    permission: SharePermission,
+    connection: &mut PgConnection,
+) -> Result<Option<TaskShare>, ApplicationError> {
+    use crate::schema::task_shares::dsl::{self, task_shares};
+
+    let query = diesel::update(
+        task_shares
+            .filter(dsl::task_id.eq(task_id))
+            .filter(dsl::user_id.eq(target_user.ref_id())),
+    )
+    .set(dsl::permission.eq(permission))
+    .returning(TaskShare::as_select());
+
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
+
+    match query.get_result::<TaskShare>(connection) {
+        Ok(row) => Ok(Some(row)),
+        Err(diesel::result::Error::NotFound) => Ok(None),
         Err(e) => {
             event!(Level::ERROR, "Query Failed: {e}");
             Err(ApplicationError::DieselError(e))
@@ -751,7 +862,12 @@ pub fn add_share_for_task(
 }
 
 /// Remove the share row granting `target` access to the caller's task.
-/// A missing share row on a task the caller owns is a 404.
+///
+/// A share which is not there is not a failure: `DELETE` is idempotent, so
+/// removing a share which is already gone asks for the state the caller
+/// already has, and is answered the same way. (An unknown *username* is still
+/// a 404, because that is a lookup of a user which does not exist rather than
+/// a share which does.)
 pub fn remove_share(
     owner: &User,
     task_id: &i32,
@@ -776,10 +892,11 @@ pub fn remove_share(
 
     match query.execute(connection) {
         Ok(0) => {
-            event!(Level::ERROR, "No share row found to delete");
-            Err(ApplicationError::DieselError(
-                diesel::result::Error::NotFound,
-            ))
+            event!(
+                Level::TRACE,
+                "No share row to delete: there was none, which is the state asked for"
+            );
+            Ok(())
         }
         Ok(_) => {
             event!(Level::TRACE, "Query succeeded");
@@ -792,14 +909,33 @@ pub fn remove_share(
     }
 }
 
-/// One row of the share listing for a task.
+/// One share as the API represents it: the share row's own id, the user it is
+/// for, and the permission it grants them.
+///
+/// This is what a client is shown for a share whether it came from the
+/// collection or from a `PUT`, so that one share has one representation.
 #[derive(Clone, Debug)]
-pub struct TaskShareInfo {
+pub struct Share {
+    id: i32,
     username: String,
     permission: SharePermission,
 }
 
-impl TaskShareInfo {
+impl Share {
+    /// The share as it stands after reading its row and resolving the user it
+    /// is for.
+    fn from_row(row: &TaskShare, target_user: &User) -> Self {
+        Share {
+            id: *row.id(),
+            username: target_user.ref_username().clone(),
+            permission: row.permission(),
+        }
+    }
+
+    pub fn id(&self) -> &i32 {
+        &self.id
+    }
+
     pub fn username(&self) -> &String {
         &self.username
     }
@@ -814,7 +950,7 @@ pub fn list_shares_for_task(
     owner: &User,
     task_id: &i32,
     connection: &mut PgConnection,
-) -> Result<Vec<TaskShareInfo>, ApplicationError> {
+) -> Result<Vec<Share>, ApplicationError> {
     require_task_owner(owner, task_id, connection)?;
 
     use crate::schema::task_shares::dsl as share_dsl;
@@ -823,7 +959,7 @@ pub fn list_shares_for_task(
     let query = share_dsl::task_shares
         .inner_join(user_dsl::users)
         .filter(share_dsl::task_id.eq(task_id))
-        .select((user_dsl::username, share_dsl::permission));
+        .select((share_dsl::id, user_dsl::username, share_dsl::permission));
 
     event!(
         Level::TRACE,
@@ -831,10 +967,11 @@ pub fn list_shares_for_task(
         diesel::debug_query::<diesel::pg::Pg, _>(&query)
     );
 
-    match query.load::<(String, SharePermission)>(connection) {
+    match query.load::<(i32, String, SharePermission)>(connection) {
         Ok(rows) => Ok(rows
             .into_iter()
-            .map(|(username, permission)| TaskShareInfo {
+            .map(|(id, username, permission)| Share {
+                id,
                 username,
                 permission,
             })
@@ -949,5 +1086,73 @@ mod tests {
         let (stranger, _) = make_user_and_task(connection, "none_stranger");
         let perm = get_task_permission(&stranger, task.id(), connection).unwrap();
         assert_eq!(perm, Permission::None);
+    }
+
+    /// The caller of `add_share_for_task` has to tell a created share from a
+    /// replaced one, because the status it answers with depends on which
+    /// happened, and an upsert which reports nothing cannot be asked.
+    #[test]
+    fn add_share_reports_created_then_replaced() {
+        let connection = &mut establish_connection().expect("Unable to connect to database");
+        let (owner, task) = make_user_and_task(connection, "share_write");
+        let (grantee, _) = make_user_and_task(connection, "share_write_target");
+        let target = Username::new(grantee.ref_username().clone()).unwrap();
+
+        let created = add_share_for_task(
+            &owner,
+            task.id(),
+            &target,
+            SharePermission::Read,
+            connection,
+        )
+        .unwrap();
+        assert!(
+            matches!(created, ShareWrite::Created(_)),
+            "A share which was not there is created."
+        );
+        let created_share = created.share();
+        assert_eq!(created_share.username(), grantee.ref_username());
+        assert_eq!(created_share.permission(), SharePermission::Read);
+
+        // The same permission again is a replacement, not a second share: the
+        // request is idempotent, and only a row which is really there can be
+        // reported as having been replaced.
+        let replaced = add_share_for_task(
+            &owner,
+            task.id(),
+            &target,
+            SharePermission::ReadWrite,
+            connection,
+        )
+        .unwrap();
+        assert!(
+            matches!(replaced, ShareWrite::Replaced(_)),
+            "A share which was already there has its permission replaced."
+        );
+        assert_eq!(
+            replaced.share().permission(),
+            SharePermission::ReadWrite,
+            "The replaced share reports the permission it now carries."
+        );
+
+        let shares = list_shares_for_task(&owner, task.id(), connection).unwrap();
+        assert_eq!(
+            shares.len(),
+            1,
+            "Writing twice must not add a second share."
+        );
+        assert_eq!(shares[0].id(), created_share.id());
+        assert_eq!(shares[0].permission(), SharePermission::ReadWrite);
+
+        // Removing a share which is not there leaves the requested state, so it
+        // is a success rather than a lookup miss.
+        remove_share(&owner, task.id(), &target, connection).unwrap();
+        remove_share(&owner, task.id(), &target, connection)
+            .expect("Removing an absent share is the state asked for, not a failure.");
+        assert!(
+            list_shares_for_task(&owner, task.id(), connection)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

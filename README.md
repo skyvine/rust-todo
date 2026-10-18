@@ -47,12 +47,12 @@ whether authenticating again could ever help:
   a key that would be refused exactly the same way.
 
 A task you may not see and a task which does not exist are deliberately indistinguishable:
-both answer 403 with the same body shape, on `GET /tasks/{id}`, `PATCH /tasks/{id}`,
-`POST /share_task`, `GET /task\_shares`, and `DELETE /unshare\_task`. Usernames and user ids
-are public, so a real lookup miss there is still a 404: an unknown target username in
-`/share\_task` or `/unshare\_task`, and an unknown id in `/user\_by\_id`. A login naming a
-username no account has is not one of these misses: it is a refused authentication attempt,
-and is answered as one.
+both answer 403 with the same body shape, on every verb which acts on a task: `GET /tasks/{id}`,
+`PATCH /tasks/{id}`, `GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
+`DELETE /tasks/{id}/shares/{username}`. Usernames and user ids are public, so a real lookup
+miss there is still a 404: an unknown target username in a `PUT` or `DELETE` on a share, and
+an unknown id in `/user\_by\_id`. A login naming a username no account has is not one of these
+misses: it is a refused authentication attempt, and is answered as one.
 
 ### Tasks
 
@@ -116,27 +116,76 @@ changed, and nothing removes it.
   - Statuses: `200 OK`; `400` if no field at all is provided to change, or if the new
     title is unusable; `403` and `401` as for `GET /tasks/{id}`.
 
+### Shares
+
+A share is one user's access to one task, so it is a sub-resource of the task rather than an
+action on it: the shares of a task are at `/tasks/{id}/shares`, and the share for one named
+user is at `/tasks/{id}/shares/{username}`. The URI names the share, which is what lets a
+client read, change and remove it by URI. Only the owner of a task may list, create or remove
+its shares; a `read_write` grantee may edit the task itself but not share it onward.
+
+- `GET /tasks/{id}/shares`: List the shares on the task.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Path parameters:
+    - id [number]: The id of the task whose shares to list, e.g. `GET /tasks/1/shares`.
+  - Output keys:
+    - shares [array]: Each share has `id` [number] (the share's own id, which no other
+      resource exposes), `username` [string] and `permission` [string] ("read" or
+      "read\_write").
+  - Statuses: `200 OK`; `404` if the path names no task at all; `403` if the task is not
+    the caller's, and for a task which does not exist; `401` if the auth key is missing,
+    malformed, unknown, or expired.
+- `PUT /tasks/{id}/shares/{username}`: Assigns a permission to another user on the task,
+  creating the share if it is not there and replacing the permission if it is. The URI names
+  a fully specified share and the body says what it grants, so this is an idempotent
+  assignment and not a submission of a new one: repeating it leaves the share in the same
+  state.
+  - Input keys:
+    - permission [string]: Either "read" or "read\_write". This is the whole
+      representation: the task, the sharee, and the URI of the share are all named by the
+      path, so there is no `PATCH` on a share and no partial representation to express.
+  - Path parameters:
+    - id [number]: The id of the task to share, e.g. `PUT /tasks/1/shares/alice`.
+    - username [string]: The name of the user to share with.
+  - Output keys:
+    - share [object]: The share as it now stands, in the same shape the listing uses, so
+      a client which gets a 200 learns what the share is without asking again.
+  - Statuses: `201 Created`, with a `Location: /tasks/{id}/shares/{username}` header
+    naming the share's own URI, when it created the share; `200 OK` when it replaced the
+    permission on a share which was already there. The status is the only way to tell those
+    two apart, which is why a created share answers 201 with a `Location` and a replaced one
+    answers 200 with no `Location` at all. Also `400` if the permission is neither "read"
+    nor "read\_write"; `404` if the path names no task, and for a username no account has,
+    since usernames are public and a share can name one that does not exist; `403` if the
+    task is not the caller's, and for a task which does not exist; `401` if the auth key is
+    missing, malformed, unknown, or expired.
+- `DELETE /tasks/{id}/shares/{username}`: Removes the share, so the named user loses the
+  named access to the named task. This request has no body: the URI says everything it acts
+  on, and RFC 9110 §9.3.5 gives content in a `DELETE` no defined meaning, so any
+  intermediary which strips such a body would otherwise break the request.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Path parameters:
+    - id [number]: The id of the task the share is on, e.g. `DELETE /tasks/1/shares/alice`.
+    - username [string]: The name of the user whose access to remove.
+  - Statuses: `204 No Content`, whether or not the share was there: `DELETE` is idempotent,
+    so removing a share which is already gone leaves the state the caller asked for and is
+    answered exactly as the removal which got it there was. Also `404` for a username no
+    account has; `403` if the task is not the caller's, and for a task which does not
+    exist; `401` if the auth key is missing, malformed, unknown, or expired.
+
 ### DELETE
 
 - /logout: Disable an auth key
   - Input keys:
     - auth\_key [string]: An auth key as returned by the login endpoint.
-- /unshare\_task: Remove a user's access to a task owned by the caller
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the task to change.
-    - username [string]: The username of the user whose access should be removed.
+- /tasks/{id}/shares/{username}: Remove a user's access to a task owned by the caller. It
+  takes no body, and is documented above with the rest of the shares.
 
 ### GET
 
 - /is\_alive: unconditionally returns an Ok status
-- /task\_shares: List the shares on a task owned by the caller
-  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
-  - Query parameters:
-    - id [number]: The id of the task whose shares to list, e.g. `GET /task\_shares?id=1`.
-  - Output keys:
-    - shares [array]: Each item has `username` [string] and `permission` [string] ("read" or "read\_write").
 - /whoami: Retrieves the username of the currently logged in user
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
     where it is an auth key as returned by the login endpoint.
@@ -168,16 +217,12 @@ changed, and nothing removes it.
     malformed header rather than a refused credential.
   - Output keys:
     - auth\_key [string]: The auth\_key which can be used for requests that require authentication
-- /share\_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the task to share.
-    - username [string]: The username of the user to share with.
-    - permission [string]: Either "read" or "read\_write".
 
 The task endpoints are documented together, under [Tasks](#tasks); the collection is
 `GET /tasks`, and `GET /tasks/{id}`, `POST /tasks`, and `PATCH /tasks/{id}` are the same
-resource at one URI.
+resource at one URI. Their shares are documented together under [Shares](#shares), and
+`GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
+`DELETE /tasks/{id}/shares/{username}` are the same share resource at one URI.
 
 ### PATCH
 

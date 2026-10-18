@@ -79,17 +79,17 @@ the two cases apart, and sends no `Location` for the new share.
 
 ## Acceptance criteria
 
-- [ ] `GET`, `PUT`, and `DELETE` under `/tasks/{id}/shares` exist;
+- [x] `GET`, `PUT`, and `DELETE` under `/tasks/{id}/shares` exist;
       `/share_task`, `/task_shares`, and `/unshare_task` are gone.
-- [ ] No endpoint reads a request body on a `DELETE`.
-- [ ] `PUT` returns `201` + `Location` when it creates a share and `200` when
+- [x] No endpoint reads a request body on a `DELETE`.
+- [x] `PUT` returns `201` + `Location` when it creates a share and `200` when
       it replaces an existing permission; the core function reports which.
-- [ ] Re-sharing with the same permission is still safe to repeat.
-- [ ] `DELETE` of an absent share returns the documented status, consistently.
-- [ ] The existence-oracle rule still holds: a task that does not exist and a
+- [x] Re-sharing with the same permission is still safe to repeat.
+- [x] `DELETE` of an absent share returns the documented status, consistently.
+- [x] The existence-oracle rule still holds: a task that does not exist and a
       task owned by someone else return the same status and body shape on all
       three verbs.
-- [ ] Tests updated: the `share_task`, `unshare_task`, and `get_task_shares`
+- [x] Tests updated: the `share_task`, `unshare_task`, and `get_task_shares`
       helpers, plus `owner_can_share_and_see_share_listed`,
       `resharing_changes_the_permission` (extend it to assert the 201/200
       distinction), `non_owner_cannot_share_unshare_or_list`,
@@ -98,14 +98,14 @@ the two cases apart, and sends no `Location` for the new share.
       `read_write_sharee_cannot_manage_shares`,
       `cannot_list_shares_without_a_valid_id_query_parameter` (repurpose or
       delete — there is no query string left).
-- [ ] `http_requests/post_share_task.http` and
+- [x] `http_requests/post_share_task.http` and
       `http_requests/delete_unshare_task.http` are rewritten; the DELETE
       request has no body.
-- [ ] `README.md` documents the three share endpoints, including the
+- [x] `README.md` documents the three share endpoints, including the
       201-vs-200 rule.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [x] `cargo clippy` passes with no new warnings.
+- [x] `cargo test` passes.
+- [x] `cargo fmt --check` passes.
 
 ## Notes
 
