@@ -445,71 +445,6 @@ pub fn establish_connection() -> Result<PgConnection, ConnectionError> {
     connection
 }
 
-pub fn get_all_tasks_for_user(
-    user: &User,
-    connection: &mut PgConnection,
-) -> Result<Vec<Task>, ApplicationError> {
-    use crate::schema::task_shares::dsl as share_dsl;
-    use crate::schema::tasks::dsl as task_dsl;
-
-    // Tasks shared with the user, by id, as a subquery.
-    let shared_task_ids = share_dsl::task_shares
-        .filter(share_dsl::user_id.eq(user.ref_id()))
-        .select(share_dsl::task_id);
-
-    let query = task_dsl::tasks
-        .filter(
-            task_dsl::owner
-                .eq(user.ref_id())
-                .or(task_dsl::id.eq_any(shared_task_ids)),
-        )
-        .select(Task::as_select());
-
-    event!(
-        Level::TRACE,
-        "Running query: {}",
-        diesel::debug_query::<diesel::pg::Pg, _>(&query)
-    );
-
-    match query.load::<Task>(connection) {
-        Ok(found_tasks) => Ok(found_tasks),
-        Err(e) => Err(ApplicationError::DieselError(e)),
-    }
-}
-
-pub fn get_incomplete_tasks_for_user(
-    user: &User,
-    connection: &mut PgConnection,
-) -> Result<Vec<Task>, ApplicationError> {
-    use crate::schema::task_shares::dsl as share_dsl;
-    use crate::schema::tasks::dsl as task_dsl;
-
-    // Tasks shared with the user, by id, as a subquery.
-    let shared_task_ids = share_dsl::task_shares
-        .filter(share_dsl::user_id.eq(user.ref_id()))
-        .select(share_dsl::task_id);
-
-    let query = task_dsl::tasks
-        .filter(
-            task_dsl::owner
-                .eq(user.ref_id())
-                .or(task_dsl::id.eq_any(shared_task_ids)),
-        )
-        .filter(task_dsl::completed.eq(false))
-        .select(Task::as_select());
-
-    event!(
-        Level::TRACE,
-        "Running query: {}",
-        diesel::debug_query::<diesel::pg::Pg, _>(&query)
-    );
-
-    match query.load::<Task>(connection) {
-        Ok(found_tasks) => Ok(found_tasks),
-        Err(e) => Err(ApplicationError::DieselError(e)),
-    }
-}
-
 pub fn get_new_auth_key(
     user: &User,
     given_password: &CleartextPassword,
@@ -569,6 +504,53 @@ pub fn get_task_by_id(
             event!(Level::ERROR, "Query failed while getting task by id: {e}");
             Err(ApplicationError::DieselError(e))
         }
+    }
+}
+
+/// Every task the user can see: the tasks they own plus the tasks shared with
+/// them, narrowed to those whose `completed` is the given value.
+///
+/// `completed` is the collection's filter, and `None` means no filter at all:
+/// the whole collection, not an empty one. Both views are built by this one
+/// query so that the rule for which tasks a caller can see lives in one place.
+pub fn get_tasks_for_user(
+    user: &User,
+    completed: Option<bool>,
+    connection: &mut PgConnection,
+) -> Result<Vec<Task>, ApplicationError> {
+    use crate::schema::task_shares::dsl as share_dsl;
+    use crate::schema::tasks::dsl as task_dsl;
+
+    // Tasks shared with the user, by id, as a subquery.
+    let shared_task_ids = share_dsl::task_shares
+        .filter(share_dsl::user_id.eq(user.ref_id()))
+        .select(share_dsl::task_id);
+
+    // Boxed so that the filter below can be added or left out without two
+    // copies of the "owned or shared" subquery above.
+    let mut query = task_dsl::tasks
+        .filter(
+            task_dsl::owner
+                .eq(user.ref_id())
+                .or(task_dsl::id.eq_any(shared_task_ids)),
+        )
+        .into_boxed::<diesel::pg::Pg>();
+
+    if let Some(completed) = completed {
+        query = query.filter(task_dsl::completed.eq(completed));
+    }
+
+    let query = query.select(Task::as_select());
+
+    event!(
+        Level::TRACE,
+        "Running query: {}",
+        diesel::debug_query::<diesel::pg::Pg, _>(&query)
+    );
+
+    match query.load::<Task>(connection) {
+        Ok(found_tasks) => Ok(found_tasks),
+        Err(e) => Err(ApplicationError::DieselError(e)),
     }
 }
 

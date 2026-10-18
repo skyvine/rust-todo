@@ -1,6 +1,6 @@
 use crate::core::{
     ApplicationError, Permission, SharePermission, add_share_for_task, add_user, auth_key_to_user,
-    establish_connection, get_incomplete_tasks_for_user, get_new_auth_key, get_task_permission,
+    establish_connection, get_new_auth_key, get_task_permission, get_tasks_for_user,
     get_user_by_name, list_shares_for_task, remove_share,
 };
 use crate::domain_types::{
@@ -432,38 +432,33 @@ pub async fn logout(auth_key: AuthKey) -> impl Responder {
 
 // GET endpoints
 
-#[get("/all_tasks")]
-pub async fn get_all_tasks(auth_key: AuthKey) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Get All Tasks", %request_id).entered();
-
-    match establish_connection() {
-        Ok(mut connection) => {
-            let user = match auth_key_to_user(auth_key.as_str(), &mut connection) {
-                Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}")),
-            };
-
-            match crate::core::get_all_tasks_for_user(&user, &mut connection) {
-                Ok(tasks) => HttpResponse::Ok()
-                    .json(json!({"request_id": format!("{request_id}"), "tasks": tasks})),
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
-        }
-        Err(e) => {
-            event!(
-                Level::ERROR,
-                "Unable to establish connection to database: {e:?}"
-            );
-            HttpResponse::InternalServerError().json(error_body(request_id))
-        }
-    }
+/// The filter `GET /tasks` reads from the query string.
+///
+/// `completed` is optional, and leaving it out means no filter: the whole
+/// collection the caller can see. It is a boolean rather than a second
+/// parameter for "incomplete" because it is the field the same name carries in
+/// the task representation, and a client which has one knows which value to
+/// send. A value which is not a boolean names no view of the collection, so it
+/// is a client error: `query_error_handler` answers 400 with the standard JSON
+/// error body.
+#[derive(Deserialize)]
+struct TasksQuery {
+    completed: Option<bool>,
 }
 
-#[get("/incomplete_tasks")]
-pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
+/// Returns the caller's collection of tasks: the ones they own plus the ones
+/// shared with them, narrowed to `completed` when that filter is given.
+///
+/// The filter narrows the collection rather than naming a second one: the same
+/// URI serves both, and the task's completion state is a property of the task,
+/// not of the way it is asked for.
+#[get("/tasks")]
+pub async fn get_tasks(
+    auth_key: AuthKey,
+    query: actix_web::web::Query<TasksQuery>,
+) -> impl Responder {
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Get Incomplete Tasks", %request_id).entered();
+    let _enter_guard = span!(Level::ERROR, "Get Tasks", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
@@ -472,7 +467,7 @@ pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match get_incomplete_tasks_for_user(&user, &mut connection) {
+            match get_tasks_for_user(&user, query.completed, &mut connection) {
                 Ok(tasks) => HttpResponse::Ok()
                     .json(json!({"request_id": format!("{request_id}"), "tasks": tasks})),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
@@ -1283,6 +1278,21 @@ mod tests {
             .expect("The created task should be in the response body.")
     }
 
+    /// Lists the caller's tasks, narrowed by the `completed` filter when the
+    /// caller passes one (`"?completed=false"`, say) and left unfiltered when
+    /// the string is empty.
+    async fn get_tasks(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        filter: &str,
+    ) -> ServiceResponse {
+        let request = test::TestRequest::get()
+            .uri(&format!("/tasks{filter}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        test::call_service(app, request).await
+    }
+
     fn extract_json_from_constructor<Constructor, Output>(
         response: ServiceResponse,
         key: &str,
@@ -1818,6 +1828,9 @@ mod tests {
     /// A task is named by its URI, so a path which cannot name one is a missing
     /// resource rather than a malformed request: the router answers 404, where
     /// the old query string asked a 400 of a request which named nothing.
+    ///
+    /// `GET /tasks` is not among them: it names the collection rather than one
+    /// task, and its own filter is a client error rather than a missing path.
     #[actix_web::test]
     async fn a_path_which_cannot_name_a_task_is_not_found() {
         let username = "unusable-task-path-username";
@@ -1827,7 +1840,6 @@ mod tests {
         let auth_key = register_and_login(&app, username, password).await;
 
         for (method, uri) in [
-            (Method::GET, "/tasks"),
             (Method::GET, "/tasks/"),
             (Method::GET, "/tasks/not-a-number"),
             (Method::GET, "/tasks/1/"),
@@ -2033,10 +2045,12 @@ mod tests {
         );
     }
 
+    /// Without a `completed` filter, the collection is everything the caller can
+    /// see: the tasks they own plus the tasks shared with them.
     #[actix_web::test]
-    async fn can_get_all_tasks() {
-        let username = "can-get-all-tasks-username";
-        let password = "can-get-all-tasks-password";
+    async fn can_get_tasks() {
+        let username = "can-get-tasks-username";
+        let password = "can-get-tasks-password";
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username, password).await;
@@ -2051,22 +2065,18 @@ mod tests {
             "Unable to add second task.",
         );
 
-        let get_tasks_request = test::TestRequest::get()
-            .uri("/all_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
-            .to_request();
-        let get_tasks_response = assert_response_success(
-            test::call_service(&app, get_tasks_request).await,
-            "Could not get tasks!",
-        );
+        let get_tasks_response =
+            assert_response_success(get_tasks(&app, &auth_key, "").await, "Could not get tasks!");
         let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
         assert_eq!(tasks.len(), 2, "Expected 2 tasks, found {}", tasks.len());
     }
 
+    /// The completed filter narrows the collection rather than replacing it:
+    /// both values of it answer a view of the same URI.
     #[actix_web::test]
-    async fn can_get_incomplete_tasks() {
-        let username = "can-get-incomplete-tasks-username";
-        let password = "can-get-incomplete-tasks-password";
+    async fn the_completed_filter_selects_incomplete_tasks() {
+        let username = "completed-filter-incomplete-username";
+        let password = "completed-filter-incomplete-password";
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username, password).await;
@@ -2078,26 +2088,13 @@ mod tests {
 
         let second_task_id = create_task(&app, &auth_key, "task 2", None).await;
 
-        let update_request = test::TestRequest::patch()
-            .uri(&format!("/tasks/{second_task_id}"))
-            .set_json(super::UpdateTaskPayload {
-                completed: Some(true),
-                title: None,
-                description: None,
-            })
-            .insert_header((AUTHORIZATION, format!("Bearer {}", auth_key.clone())))
-            .to_request();
         assert_response_success(
-            test::call_service(&app, update_request).await,
+            set_task_completed(&app, &auth_key, second_task_id, true).await,
             "Unable to mark second task completed.",
         );
 
-        let get_tasks_request = test::TestRequest::get()
-            .uri("/incomplete_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
-            .to_request();
         let get_tasks_response = assert_response_success(
-            test::call_service(&app, get_tasks_request).await,
+            get_tasks(&app, &auth_key, "?completed=false").await,
             "Could not get incomplete tasks!",
         );
         let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
@@ -2108,6 +2105,131 @@ mod tests {
             tasks.len()
         );
         assert_eq!(*tasks[0].title(), "task 1");
+    }
+
+    /// The other value of the same filter answers the other view, so a client
+    /// needs no second URI to ask for the completed tasks.
+    #[actix_web::test]
+    async fn the_completed_filter_selects_completed_tasks() {
+        let username = "completed-filter-completed-username";
+        let password = "completed-filter-completed-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        assert_response_success(
+            add_task(&app, &auth_key, "task 1", None).await,
+            "Unable to add first task.",
+        );
+
+        let second_task_id = create_task(&app, &auth_key, "task 2", None).await;
+
+        assert_response_success(
+            set_task_completed(&app, &auth_key, second_task_id, true).await,
+            "Unable to mark second task completed.",
+        );
+
+        let get_tasks_response = assert_response_success(
+            get_tasks(&app, &auth_key, "?completed=true").await,
+            "Could not get completed tasks!",
+        );
+        let tasks: Vec<Task> = extract_json_tasks(get_tasks_response);
+        assert_eq!(
+            tasks.len(),
+            1,
+            "Expected 1 completed task, found {}",
+            tasks.len()
+        );
+        assert_eq!(*tasks[0].title(), "task 2");
+    }
+
+    /// A `completed` value which is not a boolean names no view of the
+    /// collection, so it is answered as a client error carrying the standard
+    /// JSON error body rather than silently matching nothing.
+    #[actix_web::test]
+    async fn a_non_boolean_completed_filter_is_a_bad_request() {
+        let username = "bad-completed-filter-username";
+        let password = "bad-completed-filter-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        for uri in ["/tasks?completed=maybe", "/tasks?completed="] {
+            let request = test::TestRequest::get()
+                .uri(uri)
+                .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
+            assert_json_error_with_request_id(response);
+        }
+
+        // The credentials are settled before the filter is read, so a request
+        // carrying neither is still refused as unauthenticated rather than
+        // told what was wrong with its query string.
+        let request = test::TestRequest::get()
+            .uri("/tasks?completed=maybe")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_unauthorized(
+            &response,
+            "An unreadable filter must not answer a request which holds no credentials",
+        );
+    }
+
+    /// The filter is answered from the database, so a task completed by someone
+    /// else leaves the caller's filtered view even though the caller still
+    /// holds a share on it and still sees it unfiltered.
+    #[actix_web::test]
+    async fn completing_a_shared_task_removes_it_from_the_sharees_incomplete_view() {
+        let owner_username = "shared-completed-owner-username";
+        let grantee_username = "shared-completed-grantee-username";
+        let password = "shared-completed-password";
+        let app = test::init_service(build_app!()).await;
+
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let grantee_key = register_and_login(&app, grantee_username, password).await;
+
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
+            "Share request failed",
+        );
+
+        // The sharee sees the task while it is incomplete...
+        let response = assert_response_success(
+            get_tasks(&app, &grantee_key, "?completed=false").await,
+            "list sharee incomplete tasks",
+        );
+        let tasks: Vec<Task> = extract_json_tasks(response);
+        assert_eq!(tasks.len(), 1);
+
+        // ...and stops seeing it once the owner completes it, without losing
+        // it from the collection as a whole.
+        assert_response_success(
+            set_task_completed(&app, &owner_key, task_id, true).await,
+            "owner should be able to complete the shared task",
+        );
+
+        let filtered = assert_response_success(
+            get_tasks(&app, &grantee_key, "?completed=false").await,
+            "list sharee incomplete tasks",
+        );
+        assert_eq!(
+            extract_json_tasks(filtered).len(),
+            0,
+            "A completed task should leave the sharee's incomplete view"
+        );
+
+        let unfiltered =
+            assert_response_success(get_tasks(&app, &grantee_key, "").await, "list sharee tasks");
+        let tasks: Vec<Task> = extract_json_tasks(unfiltered);
+        assert_eq!(
+            tasks.len(),
+            1,
+            "The sharee should still see the completed task unfiltered"
+        );
+        assert_eq!(*tasks[0].id(), task_id);
     }
 
     async fn share_task(
@@ -2675,24 +2797,16 @@ mod tests {
         assert_eq!(*task.id(), task_id);
 
         // ...and it shows up in their listings.
-        let list_request = test::TestRequest::get()
-            .uri("/all_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
-            .to_request();
         let list_response = assert_response_success(
-            test::call_service(&app, list_request).await,
+            get_tasks(&app, &grantee_key, "").await,
             "list grantee tasks",
         );
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(tasks.len(), 1);
         assert_eq!(*tasks[0].id(), task_id);
 
-        let incomplete_request = test::TestRequest::get()
-            .uri("/incomplete_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
-            .to_request();
         let incomplete_response = assert_response_success(
-            test::call_service(&app, incomplete_request).await,
+            get_tasks(&app, &grantee_key, "?completed=false").await,
             "list grantee incomplete tasks",
         );
         let incomplete: Vec<Task> = extract_json_tasks(incomplete_response);
@@ -2726,12 +2840,8 @@ mod tests {
             "read_write grantee should be able to get the task",
         );
 
-        let list_request = test::TestRequest::get()
-            .uri("/all_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
-            .to_request();
         let list_response = assert_response_success(
-            test::call_service(&app, list_request).await,
+            get_tasks(&app, &grantee_key, "").await,
             "list grantee tasks",
         );
         let tasks: Vec<Task> = extract_json_tasks(list_response);
@@ -2761,12 +2871,8 @@ mod tests {
             "A user with no share on a task must get a 403 when fetching it.",
         );
 
-        let list_request = test::TestRequest::get()
-            .uri("/all_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
-            .to_request();
         let list_response = assert_response_success(
-            test::call_service(&app, list_request).await,
+            get_tasks(&app, &stranger_key, "").await,
             "list stranger tasks",
         );
         let body: serde_json::Value =
@@ -2806,14 +2912,8 @@ mod tests {
             .expect("insert stale share row");
         drop(connection);
 
-        let list_request = test::TestRequest::get()
-            .uri("/all_tasks")
-            .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
-            .to_request();
-        let list_response = assert_response_success(
-            test::call_service(&app, list_request).await,
-            "list owner tasks",
-        );
+        let list_response =
+            assert_response_success(get_tasks(&app, &owner_key, "").await, "list owner tasks");
         let tasks: Vec<Task> = extract_json_tasks(list_response);
         assert_eq!(
             tasks.len(),
