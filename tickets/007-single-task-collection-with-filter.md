@@ -60,28 +60,31 @@ the representation.
 
 ## Acceptance criteria
 
-- [ ] `GET /tasks` returns the caller's tasks, shared ones included.
-- [ ] `GET /tasks?completed=false` returns only incomplete ones.
-- [ ] `GET /tasks?completed=true` returns only completed ones.
-- [ ] `GET /tasks?completed=maybe` returns `400` with the standard JSON error
+- [X] `GET /tasks` returns the caller's tasks, shared ones included.
+- [X] `GET /tasks?completed=false` returns only incomplete ones.
+- [X] `GET /tasks?completed=true` returns only completed ones.
+- [X] `GET /tasks?completed=maybe` returns `400` with the standard JSON error
       body.
-- [ ] `GET /tasks` with no `completed` parameter behaves like the old
+- [X] `GET /tasks` with no `completed` parameter behaves like the old
       `/all_tasks`.
-- [ ] Only one core query function remains; the two old ones are gone.
-- [ ] Tests updated: `can_get_all_tasks`, `can_get_incomplete_tasks`,
+- [X] Only one core query function remains; the two old ones are gone.
+- [X] Tests updated: `can_get_all_tasks` (now `can_get_tasks`),
+      `can_get_incomplete_tasks` (now
+      `the_completed_filter_selects_incomplete_tasks`),
       `read_share_grants_get_and_listing_access` (which uses
       `/incomplete_tasks`), `read_write_share_grants_get_and_listing_access`,
       `owner_listings_never_duplicate_with_stale_share_row`,
       `no_share_means_401_and_no_listing_entry`.
-- [ ] New test: the same filter returns the same task set whether it is
-      reached with `?completed=false` or by default plus client-side filtering
-      — or, more usefully, that a task completed by another user disappears
-      from the caller's filtered view.
-- [ ] `README.md` documents the collection, the filter, and the parameter's
+- [X] New test: `completing_a_shared_task_removes_it_from_the_sharees_incomplete_view`
+      — a task completed by another user disappears from the caller's filtered
+      view while staying in the collection as a whole. Also new:
+      `the_completed_filter_selects_completed_tasks` and
+      `a_non_boolean_completed_filter_is_a_bad_request`.
+- [X] `README.md` documents the collection, the filter, and the parameter's
       error behavior; `/all_tasks` and `/incomplete_tasks` are removed.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [X] `cargo clippy` passes with no new warnings.
+- [X] `cargo test` passes.
+- [X] `cargo fmt --check` passes.
 
 ## Notes
 
@@ -91,3 +94,20 @@ rules has to be made twice today.
 
 Do not add `?owner=me` style shortcuts. A caller who owns a task already sees
 it in `GET /tasks`.
+
+### What landing it involved
+
+- `core.rs`: `get_tasks_for_user(user, completed: Option<bool>, connection)`
+  replaces both old functions. The "owned or shared" predicate is built once
+  and the statement is boxed so the `completed` predicate can be added or left
+  out without a second copy of it.
+- `web_api.rs`: one `TasksQuery { completed: Option<bool> }` extractor on
+  `get_tasks`. `AuthKey` is the first parameter on purpose: actix settles
+  extractors in order, so an unauthenticated request with a bad filter is a
+  401 rather than a 400 about a query string it was never entitled to send.
+- `a_path_which_cannot_name_a_task_is_not_found` (ticket 006) asserted
+  `GET /tasks` was a 404, which was true when there was no collection yet; that
+  case moved out of the list and the comment says why.
+- Pagination is still out of scope: `README.md` says plainly that the
+  collection is unpaginated and unsorted, so the limit is documented rather
+  than implied away.

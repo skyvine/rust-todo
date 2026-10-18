@@ -1,0 +1,6 @@
+# The same collection, filtered to the tasks which are not completed.
+# A `completed` value which is not a boolean is answered with 400.
+GET /tasks?completed=false HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Authorization: Bearer manual-auth-key

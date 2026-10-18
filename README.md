@@ -58,11 +58,30 @@ and is answered as one.
 
 A task is one resource at one URI, `/tasks/{id}`, and the id is part of the path rather
 than a query parameter or a body field, so every operation on a task addresses it the
-same way. Requests and responses are JSON.
+same way. The collection of tasks the caller can see is the one URI `GET /tasks`, filtered
+rather than duplicated: a view of the collection is a query parameter, not a second URI.
+Requests and responses are JSON.
 
 Tasks cannot be deleted. There is no `DELETE /tasks/{id}`: a task is created, read, and
 changed, and nothing removes it.
 
+- `GET /tasks`: Retrieve the caller's collection of tasks: the tasks they own plus the
+  tasks shared with them (read or read-write). The collection is not paginated or sorted;
+  every task matching the filter is returned, in the order the database yields them.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Query parameters:
+    - completed \[bool] (optional): Return only the tasks whose completed state is this
+      value, e.g. `GET /tasks?completed=false` for the incomplete tasks. The parameter
+      has the same name and type as the field `Task` serializes it under, so a client
+      which knows a task's completion state knows what to send. Leaving it out returns
+      the whole collection.
+  - Output keys:
+    - tasks [array]: The tasks in the collection, narrowed by the filter if one is given.
+  - Statuses: `200 OK`; `400` if `completed` is given a value which is not a boolean,
+    e.g. `GET /tasks?completed=maybe`, because such a value names no view of the
+    collection, with the same JSON error body every other client error carries; `401` if
+    the auth key is missing, malformed, unknown, or expired.
 - `POST /tasks`: Creates a task.
   - Input keys:
     - auth\_key [string]: An auth key as returned by the login endpoint.
@@ -110,16 +129,6 @@ changed, and nothing removes it.
 
 ### GET
 
-- /all\_tasks: Retrieve all tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
-  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
-  - Output keys:
-    - tasks [array]: Tasks owned by the caller plus tasks shared with them.
-- /incomplete\_tasks: Retrieve all incomplete tasks the caller can see. Tasks shared with the caller (read or read-write) are included.
-  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
-  - Output keys:
-    - tasks [array]: Incomplete tasks owned by the caller plus tasks shared with them.
 - /is\_alive: unconditionally returns an Ok status
 - /task\_shares: List the shares on a task owned by the caller
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
@@ -166,8 +175,9 @@ changed, and nothing removes it.
     - username [string]: The username of the user to share with.
     - permission [string]: Either "read" or "read\_write".
 
-The task endpoints are documented together, under [Tasks](#tasks); `POST /tasks`,
-`GET /tasks/{id}`, and `PATCH /tasks/{id}` are the same resource at one URI.
+The task endpoints are documented together, under [Tasks](#tasks); the collection is
+`GET /tasks`, and `GET /tasks/{id}`, `POST /tasks`, and `PATCH /tasks/{id}` are the same
+resource at one URI.
 
 ### PATCH
 
