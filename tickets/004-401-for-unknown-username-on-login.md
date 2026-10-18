@@ -87,8 +87,6 @@ If that trade-off is ever revisited, the timing work belongs here and the
       currently asserts `404` for an unknown username and asserts that no
       challenge is present. Both assertions become `401` + challenge present.
 - [ ] `invalid_password_fails` still passes.
-- [ ] New test: an unknown username and a wrong password produce responses
-      differing only in `request_id`.
 - [ ] `README.md` `/login` section states that a refused login is `401`
       whether or not the username exists.
 - [ ] `cargo clippy` passes with no new warnings.
