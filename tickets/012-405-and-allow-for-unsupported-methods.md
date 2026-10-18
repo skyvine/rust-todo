@@ -90,6 +90,7 @@ This also applies to same-path method mismatches after the redesign — `PUT
 - [ ] `HEAD` and `OPTIONS` requests to known paths are unaffected.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.
+- [ ] `cargo fmt --check` passes.
 
 ## Notes
 

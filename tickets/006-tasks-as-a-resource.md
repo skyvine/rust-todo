@@ -85,6 +85,7 @@ addressing the resource.
       request added.
 - [ ] `cargo clippy` passes with no new warnings.
 - [ ] `cargo test` passes.
+- [ ] `cargo fmt --check` passes.
 
 ## Notes
 
