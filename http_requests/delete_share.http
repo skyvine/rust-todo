@@ -1,0 +1,8 @@
+# Removes the share at the share's own URI. There is no request body: the URI
+# says which task and which user, which is everything the request acts on.
+# Answers 204 whether or not the share was there, since a DELETE which removed
+# one and a DELETE which found nothing leave the same state behind.
+DELETE /tasks/1/shares/manual-name HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Authorization: Bearer manual-auth-key

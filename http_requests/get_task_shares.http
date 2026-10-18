@@ -1,4 +1,4 @@
-GET /task_shares?id=1 HTTP/1.1
+GET /tasks/1/shares HTTP/1.1
 Host: 127.0.0.1
 Connection: close
 Authorization: Bearer manual-auth-key

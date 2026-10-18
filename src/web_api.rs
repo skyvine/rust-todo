@@ -1,7 +1,7 @@
 use crate::core::{
-    ApplicationError, Permission, SharePermission, add_share_for_task, add_user, auth_key_to_user,
-    establish_connection, get_new_auth_key, get_task_permission, get_tasks_for_user,
-    get_user_by_name, list_shares_for_task, remove_share,
+    ApplicationError, Permission, Share, SharePermission, ShareWrite, add_share_for_task, add_user,
+    auth_key_to_user, establish_connection, get_new_auth_key, get_task_permission,
+    get_tasks_for_user, get_user_by_name, list_shares_for_task, remove_share,
 };
 use crate::domain_types::{
     AuthKey, CleartextPassword, Credentials, TaskDescription, TaskTitle, Username,
@@ -11,7 +11,7 @@ use actix_web::{
     Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::JsonPayloadError,
     error::QueryPayloadError,
 };
-use actix_web::{HttpResponse, Responder, delete, get, patch, post};
+use actix_web::{HttpResponse, Responder, delete, get, patch, post, put};
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, SaltString, rand_core::OsRng},
@@ -408,6 +408,41 @@ struct TaskPath {
     id: i32,
 }
 
+/// The path parameters every single-share URI carries: the id of the task the
+/// share belongs to, and the username of the user it shares with.
+///
+/// Both halves live in the URI rather than in a body, so the URI alone names
+/// the share: a client which has seen a share listed can change it or remove
+/// it without repeating anything else, and a `DELETE` needs nothing in a body
+/// to say which share to remove.
+#[derive(Deserialize)]
+struct SharePath {
+    id: i32,
+    username: String,
+}
+
+/// The URI of one share: where it lives, and where it is read, changed and
+/// removed from.
+///
+/// A created share answers with this in a `Location`, so it is built in one
+/// place rather than spelled out where it is needed.
+fn share_uri(task_id: i32, username: &str) -> String {
+    format!("/tasks/{task_id}/shares/{username}")
+}
+
+/// A share in a response body: the id of the share itself, the username it is
+/// for, and the permission it grants.
+///
+/// The listing and the answer to a `PUT` both build their entries here, so one
+/// share is never represented two ways.
+fn share_body(share: &Share) -> serde_json::Value {
+    json!({
+        "id": share.id(),
+        "username": share.username(),
+        "permission": share.permission().as_stored_text(),
+    })
+}
+
 // DELETE endpoints
 
 #[delete("/logout")]
@@ -555,18 +590,19 @@ pub async fn is_alive() -> impl Responder {
     HttpResponse::Ok()
 }
 
-/// The query `GET /task_shares` reads the task id from.
-#[derive(Deserialize)]
-struct TaskSharesQuery {
-    id: i32,
-}
-
 /// Lists the shares on a task owned by the caller.
-#[get("/task_shares")]
+///
+/// The shares are a sub-resource of the task, so they live under its URI and
+/// the task is named by a path segment rather than by a query parameter. Only
+/// the owner may list them, and a task which does not exist is answered
+/// exactly as a task owned by someone else is, so the listing cannot be used
+/// to find out which task ids exist.
+#[get("/tasks/{id}/shares")]
 pub async fn get_task_shares(
     auth_key: AuthKey,
-    query: actix_web::web::Query<TaskSharesQuery>,
+    path: actix_web::web::Path<TaskPath>,
 ) -> impl Responder {
+    let task_id = path.into_inner().id;
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Task Shares", %request_id).entered();
 
@@ -577,11 +613,9 @@ pub async fn get_task_shares(
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match list_shares_for_task(&owner, &query.id, &mut connection) {
+            match list_shares_for_task(&owner, &task_id, &mut connection) {
                 Ok(shares) => {
-                    let shares: Vec<serde_json::Value> = shares.iter().map(|s| {
-                        json!({"username": s.username(), "permission": s.permission().as_stored_text()})
-                    }).collect();
+                    let shares: Vec<serde_json::Value> = shares.iter().map(share_body).collect();
                     HttpResponse::Ok()
                         .json(json!({"request_id": format!("{request_id}"), "shares": shares}))
                 }
@@ -860,68 +894,6 @@ pub async fn register_account(
     }
 }
 
-// Share management endpoints
-
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct ShareTaskPayload {
-    id: i32,
-    username: String,
-    permission: String,
-}
-
-/// Grants another user access to a task owned by the caller, or replaces
-/// the permission on an existing share.
-#[post("/share_task")]
-pub async fn share_task(
-    auth_key: AuthKey,
-    mut payload: actix_web::web::Json<ShareTaskPayload>,
-) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Share Task", %request_id).entered();
-
-    let permission = match SharePermission::from_stored_text(&payload.permission) {
-        Ok(p) => p,
-        Err(e) => {
-            event!(Level::ERROR, "Invalid permission: {e:?}");
-            return HttpResponse::BadRequest().json(error_body_with_message(
-                request_id,
-                "permission must be \"read\" or \"read_write\"",
-            ));
-        }
-    };
-
-    let target = match Username::new(std::mem::take(&mut payload.username)) {
-        Ok(un) => un,
-        Err(message) => {
-            event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
-        }
-    };
-
-    match establish_connection() {
-        Ok(mut connection) => {
-            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
-                Ok(user) => user,
-                Err(e) => return e.into_http_response(&format!("{request_id}")),
-            };
-
-            match add_share_for_task(&owner, &payload.id, &target, permission, &mut connection) {
-                Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
-                // Forbidden covers both "task doesn't exist" and "not your
-                // task", so the 403 doesn't reveal which.
-                Err(e) => e.into_http_response(&format!("{request_id}")),
-            }
-        }
-        Err(e) => {
-            event!(
-                Level::ERROR,
-                "Unable to establish connection to database: {e:?}"
-            );
-            HttpResponse::InternalServerError().json(error_body(request_id))
-        }
-    }
-}
-
 // PATCH endpoints
 
 /// The body of a `PATCH` on a task: only the fields to change.
@@ -1015,24 +987,119 @@ pub async fn update_task_by_id(
     }
 }
 
+// PUT endpoints
+
+/// The body of a `PUT` on a share: the whole representation.
+///
+/// The share is named by the URI, so the body carries no identifier of its
+/// own — the task, the sharee and the URI of the share are all in the path,
+/// and the permission is the one field a share has left to say.
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct UnshareTaskPayload {
-    id: i32,
-    username: String,
+struct SharePayload {
+    permission: String,
+}
+
+/// Gives another user access to a task owned by the caller, at the share's own
+/// URI, or replaces the permission on a share which is already there.
+///
+/// The URI says which share, and the body says what it grants, so this
+/// assigns a permission to a fully-specified resource and replaces whatever
+/// was there. That is `PUT` and not `POST`: the request is idempotent, and
+/// repeating it leaves the share in the same state. The status is what tells
+/// the two cases apart, since a client which cannot tell them cannot tell a
+/// new share from a changed one — `201 Created` with a `Location` naming the
+/// share's URI when it was created, `200 OK` when a permission was replaced.
+/// Both answer with the share itself, so a client never has to follow the
+/// `Location` to learn what it asked for.
+#[put("/tasks/{id}/shares/{username}")]
+pub async fn put_share(
+    auth_key: AuthKey,
+    path: actix_web::web::Path<SharePath>,
+    payload: actix_web::web::Json<SharePayload>,
+) -> impl Responder {
+    let path = path.into_inner();
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Put Share", %request_id).entered();
+
+    let target = match Username::new(path.username) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
+        }
+    };
+
+    let permission = match SharePermission::from_stored_text(&payload.permission) {
+        Ok(p) => p,
+        Err(e) => {
+            event!(Level::ERROR, "Invalid permission: {e:?}");
+            return HttpResponse::BadRequest().json(error_body_with_message(
+                request_id,
+                "permission must be \"read\" or \"read_write\"",
+            ));
+        }
+    };
+
+    match establish_connection() {
+        Ok(mut connection) => {
+            let owner = match auth_key_to_user(auth_key.as_str(), &mut connection) {
+                Ok(user) => user,
+                Err(e) => return e.into_http_response(&format!("{request_id}")),
+            };
+
+            match add_share_for_task(&owner, &path.id, &target, permission, &mut connection) {
+                Ok(write) => {
+                    let body = json!({"request_id": format!("{request_id}"), "share": share_body(write.share())});
+                    match write {
+                        ShareWrite::Created(_) => HttpResponse::Created()
+                            .insert_header((
+                                actix_web::http::header::LOCATION,
+                                share_uri(path.id, write.share().username()),
+                            ))
+                            .json(body),
+                        ShareWrite::Replaced(_) => HttpResponse::Ok().json(body),
+                    }
+                }
+                // Forbidden covers both "task doesn't exist" and "not your
+                // task", so the 403 doesn't reveal which.
+                Err(e) => e.into_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e:?}"
+            );
+            HttpResponse::InternalServerError().json(error_body(request_id))
+        }
+    }
 }
 
 // DELETE endpoints
 
-/// Removes another user's access to a task owned by the caller.
-#[delete("/unshare_task")]
-pub async fn unshare_task(
+/// Removes another user's access to a task owned by the caller, at the share's
+/// own URI.
+///
+/// The request carries no body at all: the URI names the task and the sharee,
+/// so there is nothing left to say in one. RFC 9110 §9.3.5 gives content in a
+/// `DELETE` no defined meaning, and any intermediary which strips it would
+/// otherwise break the request.
+///
+/// A share which is not there answers `204 No Content`, the same as one which
+/// was. That is what makes repeating this request safe: the state the client
+/// asked for is the state it already has. Only the owner may remove a share,
+/// and a task which does not exist is answered exactly as a task owned by
+/// someone else is.
+#[delete("/tasks/{id}/shares/{username}")]
+pub async fn delete_share(
     auth_key: AuthKey,
-    mut payload: actix_web::web::Json<UnshareTaskPayload>,
+    path: actix_web::web::Path<SharePath>,
 ) -> impl Responder {
+    let path = path.into_inner();
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Unshare Task", %request_id).entered();
+    let _enter_guard = span!(Level::ERROR, "Delete Share", %request_id).entered();
 
-    let target = match Username::new(std::mem::take(&mut payload.username)) {
+    let target = match Username::new(path.username) {
         Ok(un) => un,
         Err(message) => {
             event!(Level::ERROR, "{message}");
@@ -1047,8 +1114,8 @@ pub async fn unshare_task(
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match remove_share(&owner, &payload.id, &target, &mut connection) {
-                Ok(()) => HttpResponse::Ok().json(error_body(request_id)),
+            match remove_share(&owner, &path.id, &target, &mut connection) {
+                Ok(()) => HttpResponse::NoContent().finish(),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -2232,6 +2299,8 @@ mod tests {
         assert_eq!(*tasks[0].id(), task_id);
     }
 
+    /// Assigns a permission to a share at the share's own URI, the way a
+    /// client which knows the task id and the username does.
     async fn share_task(
         app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
         auth_key: &str,
@@ -2239,11 +2308,9 @@ mod tests {
         username: &str,
         permission: &str,
     ) -> ServiceResponse {
-        let request = test::TestRequest::post()
-            .uri("/share_task")
-            .set_json(super::ShareTaskPayload {
-                id,
-                username: String::from(username),
+        let request = test::TestRequest::put()
+            .uri(&format!("/tasks/{id}/shares/{username}"))
+            .set_json(super::SharePayload {
                 permission: String::from(permission),
             })
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
@@ -2251,6 +2318,8 @@ mod tests {
         test::call_service(app, request).await
     }
 
+    /// Removes a share at the share's own URI. There is no body to send: the
+    /// URI names everything the request acts on.
     async fn unshare_task(
         app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
         auth_key: &str,
@@ -2258,11 +2327,7 @@ mod tests {
         username: &str,
     ) -> ServiceResponse {
         let request = test::TestRequest::delete()
-            .uri("/unshare_task")
-            .set_json(super::UnshareTaskPayload {
-                id,
-                username: String::from(username),
-            })
+            .uri(&format!("/tasks/{id}/shares/{username}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         test::call_service(app, request).await
@@ -2274,7 +2339,7 @@ mod tests {
         id: i32,
     ) -> ServiceResponse {
         let request = test::TestRequest::get()
-            .uri(&format!("/task_shares?id={id}"))
+            .uri(&format!("/tasks/{id}/shares"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         test::call_service(app, request).await
@@ -2340,6 +2405,58 @@ mod tests {
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read");
     }
 
+    /// A share is created at a URI of its own, so the creation has to say which
+    /// one: the `Location` names the share the client just made, and the
+    /// representation in the body is the share itself.
+    #[actix_web::test]
+    async fn a_created_share_is_at_the_uri_it_reports() {
+        let owner_username = "share-location-owner-username";
+        let grantee_username = "share-location-grantee-username";
+        let password = "share-location-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
+
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
+
+        let created = assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
+        assert_eq!(
+            created.status().as_u16(),
+            201,
+            "A share which did not exist is created."
+        );
+
+        let location = created
+            .headers()
+            .get(LOCATION)
+            .expect("A 201 must name the share it created.")
+            .to_str()
+            .expect("A Location is ASCII.")
+            .to_string();
+        assert_eq!(
+            location,
+            format!("/tasks/{task_id}/shares/{grantee_username}"),
+            "The Location of a created share is the URI of that share."
+        );
+
+        let share = extract_json_from_constructor(created, "share", |v| v.clone());
+        assert_eq!(share["username"].as_str().unwrap(), grantee_username);
+        assert_eq!(share["permission"].as_str().unwrap(), "read");
+        assert!(
+            share["id"].is_i64(),
+            "A share carries its own id: {share:?}"
+        );
+    }
+
+    /// The status is how a client tells a new share from a changed one, so the
+    /// same request has to answer differently depending on which it was.
     #[actix_web::test]
     async fn resharing_changes_the_permission() {
         let owner_username = "reshare-owner-username";
@@ -2355,14 +2472,28 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
-        assert_response_success(
-            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
-            "Share request failed",
+        let created = share_task(&app, &owner_key, task_id, grantee_username, "read").await;
+        assert_eq!(
+            created.status().as_u16(),
+            201,
+            "The first share created a share."
         );
-        assert_response_success(
-            share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
-            "Re-share request failed",
+
+        let replaced = share_task(&app, &owner_key, task_id, grantee_username, "read_write").await;
+        assert_eq!(
+            replaced.status().as_u16(),
+            200,
+            "The second share replaced the permission on the share already there."
         );
+
+        // Nothing was created the second time, so there is nothing to point at.
+        assert!(
+            replaced.headers().get(LOCATION).is_none(),
+            "A replaced share is not a new resource, so it names no Location."
+        );
+
+        let replaced_share = extract_json_from_constructor(replaced, "share", |v| v.clone());
+        assert_eq!(replaced_share["permission"].as_str().unwrap(), "read_write");
 
         let list_response = assert_response_success(
             get_task_shares(&app, &owner_key, task_id).await,
@@ -2371,6 +2502,83 @@ mod tests {
         let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 1, "Re-sharing should replace, not duplicate");
         assert_eq!(shares[0]["permission"].as_str().unwrap(), "read_write");
+    }
+
+    /// The point of `PUT` is that repeating it is safe: the second request
+    /// finds the share the first one made, says it replaced what was there,
+    /// and leaves one share rather than two.
+    #[actix_web::test]
+    async fn repeating_a_share_with_the_same_permission_is_safe() {
+        let owner_username = "repeat-share-owner-username";
+        let grantee_username = "repeat-share-grantee-username";
+        let password = "repeat-share-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
+
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
+
+        for _ in 0..2 {
+            assert_response_success(
+                share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+                "Share request failed",
+            );
+        }
+
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
+        let shares = extract_shares(list_response);
+        assert_eq!(
+            shares.len(),
+            1,
+            "The same permission assigned twice is still one share."
+        );
+        assert_eq!(shares[0]["permission"].as_str().unwrap(), "read");
+    }
+
+    /// A permission which is neither of the two the API knows names no state a
+    /// share could be in, so it is a client error rather than a share quietly
+    /// given a permission nobody can use.
+    #[actix_web::test]
+    async fn an_unusable_permission_is_a_bad_request() {
+        let owner_username = "bad-permission-owner-username";
+        let grantee_username = "bad-permission-grantee-username";
+        let password = "bad-permission-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
+
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
+
+        for permission in ["", "owner", "read-write", "READ"] {
+            let response =
+                share_task(&app, &owner_key, task_id, grantee_username, permission).await;
+            assert_eq!(
+                response.status().as_u16(),
+                400,
+                "{permission:?} is not a permission this API knows."
+            );
+        }
+
+        let list_response = assert_response_success(
+            get_task_shares(&app, &owner_key, task_id).await,
+            "list shares",
+        );
+        assert_eq!(
+            extract_shares(list_response).len(),
+            0,
+            "A refused permission must not have created a share."
+        );
     }
 
     #[actix_web::test]
@@ -2429,6 +2637,57 @@ mod tests {
         );
         let shares = extract_shares(list_response);
         assert_eq!(shares.len(), 0, "Share row should have been removed");
+    }
+
+    /// `DELETE` is idempotent, so removing a share which is already gone asks
+    /// for the state the caller has, and is answered the same way as the
+    /// removal which got it there. A client which repeats the request — after
+    /// a timeout, say — learns it worked either time.
+    #[actix_web::test]
+    async fn unsharing_a_share_which_is_not_there_is_a_204() {
+        let owner_username = "unshare-absent-owner-username";
+        let grantee_username = "unshare-absent-grantee-username";
+        let password = "unshare-absent-password";
+        let app = test::init_service(build_app!()).await;
+
+        assert_response_success(
+            register(&app, grantee_username, password).await,
+            "Unable to register grantee",
+        );
+
+        let owner_key = register_and_login(&app, owner_username, password).await;
+        let task_id = create_task(&app, &owner_key, "task", None).await;
+
+        // Never shared at all.
+        assert_response_success(
+            unshare_task(&app, &owner_key, task_id, grantee_username).await,
+            "Removing a share which was never there leaves the state asked for.",
+        );
+
+        // Shared, then removed twice.
+        assert_response_success(
+            share_task(&app, &owner_key, task_id, grantee_username, "read").await,
+            "Share request failed",
+        );
+        let first = unshare_task(&app, &owner_key, task_id, grantee_username).await;
+        assert_eq!(
+            first.status().as_u16(),
+            204,
+            "The share was there to remove."
+        );
+        let repeated = unshare_task(&app, &owner_key, task_id, grantee_username).await;
+        assert_eq!(
+            repeated.status().as_u16(),
+            first.status().as_u16(),
+            "Repeating the removal must answer exactly as the first one did."
+        );
+        assert!(
+            repeated
+                .headers()
+                .get(actix_web::http::header::CONTENT_TYPE)
+                .is_none(),
+            "204 carries no representation, so it names no media type."
+        );
     }
 
     #[actix_web::test]
@@ -2743,26 +3002,45 @@ mod tests {
         );
     }
 
+    /// A share is named entirely by its path, so a path which cannot name one is
+    /// a missing resource rather than a malformed request: the router answers
+    /// 404, where the query string this endpoint used to take asked a 400 of a
+    /// request which named nothing. There is no query string on these URIs to
+    /// get wrong any more.
     #[actix_web::test]
-    async fn cannot_list_shares_without_a_valid_id_query_parameter() {
-        let username = "cannot-list-shares-without-id-username";
-        let password = "cannot-list-shares-without-id-password";
+    async fn a_path_which_cannot_name_a_share_is_not_found() {
+        let username = "unusable-share-path-username";
+        let password = "unusable-share-path-password";
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username, password).await;
+        let task_id = create_task(&app, &auth_key, "task", None).await;
 
-        for uri in [
-            "/task_shares",
-            "/task_shares?id=",
-            "/task_shares?id=not-a-number",
+        for (method, uri) in [
+            (Method::GET, format!("/tasks/{task_id}/shares/")),
+            (Method::GET, "/tasks/not-a-number/shares".to_string()),
+            (Method::PUT, format!("/tasks/{task_id}/shares/")),
+            (
+                Method::PUT,
+                format!("/tasks/{task_id}/shares/{username}/extra"),
+            ),
+            (Method::DELETE, format!("/tasks/{task_id}/shares/")),
+            (
+                Method::DELETE,
+                format!("/tasks/not-a-number/shares/{username}"),
+            ),
         ] {
-            let request = test::TestRequest::get()
-                .uri(uri)
+            let request = test::TestRequest::default()
+                .method(method.clone())
+                .uri(&uri)
                 .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
                 .to_request();
             let response = test::call_service(&app, request).await;
-            assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
-            assert_json_error_with_request_id(response);
+            assert_eq!(
+                response.status().as_u16(),
+                404,
+                "{method} {uri} names no share, so it should be a 404."
+            );
         }
     }
 
@@ -3011,14 +3289,14 @@ mod tests {
 
         // A 400 from the query string extractor.
         let request = test::TestRequest::get()
-            .uri("/task_shares?id=not-a-number")
+            .uri("/user_by_id?id=not-a-number")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             400,
-            "/task_shares with an unreadable query string should be a 400."
+            "/user_by_id with an unreadable query string should be a 400."
         );
         assert_json_content_type(&response, "The 400 said nothing about its body.");
 
