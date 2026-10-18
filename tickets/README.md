@@ -39,8 +39,9 @@ line points at a lower number, so no ticket is ever blocked by a later one.
 | 013 | [etag-and-conditional-requests.md](013-etag-and-conditional-requests.md) | No cache validators and no conditional requests, so concurrent edits clobber. |
 | 014 | [request-id-out-of-representations.md](014-request-id-out-of-representations.md) | `request_id` is embedded in every representation, no URI returns its own resource, and an error helper builds success bodies. |
 | 015 | [docs-and-http-examples-for-the-new-uris.md](015-docs-and-http-examples-for-the-new-uris.md) | Docs and `http_requests/` sweep. |
+| 016 | [addressable-auth-key-with-expiry.md](016-addressable-auth-key-with-expiry.md) | The `Location` of a created auth key names a URI nothing is served at, and expiry is invisible. |
 
-The numbering has three phases, which is why 011–014 come after the redesign
+The numbering has four phases, which is why 011–014 come after the redesign
 even though they are smaller than the redesign tickets:
 
 - **001–004** change media types, headers, and status codes but no URIs, so
@@ -51,6 +52,12 @@ even though they are smaller than the redesign tickets:
   final URIs — a `Location` header, the path/method table behind 405, and the
   response-shape change each apply to every endpoint, so writing them against
   the old URIs would mean writing them twice.
+- **016** is a loose end 009 left open rather than a new finding: 009 minted a
+  `Location` for the auth key and scoped out every method on it, so the URI is
+  real but unserved. It lands late because the `405` it inherits for every other
+  method should come from 012's mechanism. It is also where 009's "the key value
+  may be the URI segment" decision gets reversed — see
+  [009's "Why the URI carries the id"](009-auth-key-resource-replacing-login-and-logout.md).
 
 Dependencies:
 
@@ -60,6 +67,9 @@ Dependencies:
 - 006 → 007 → 008. 009 and 010 are independent of each other and of 006–008.
 - 011, 012, 013, 014 apply to the whole API after 006–010 and are independent
   of each other; 015 depends on all of them.
+- 016 depends on 009 and 012. 015 does not depend on 016: the README it writes
+  describes the API as it stands, and 016 changes one endpoint of it, so 015 can
+  land first and 016 updates that section the way every other ticket does.
 
 ## Findings map
 
@@ -131,6 +141,18 @@ acceptance criteria.
   you may not see it" must return the same status and body shape. This is
   about task ids, not account names, and it is unaffected by the decision that
   enumeration of *accounts* is not a concern.
+- **Key existence stays hidden too, and this one is not a style choice.** Unlike
+  an account name, a leaked key is a live credential: "this key exists" and "this
+  key does not exist" must be one answer, so `GET /auth_keys/{id}` describes a
+  key only to the user who owns it and says nothing at all about anyone else's
+  (ticket 016). No expiry or ownership information leaves the owner's own view.
+- **An auth key is addressed by its row id, never by its value.** The key is a
+  bearer token, and RFC 6750 §5.3 says those do not belong in URLs — every proxy
+  and log that records a request line records the credential. So
+  `Location: /auth_keys/{id}`, the same way a task is addressed by its id and a
+  share by its username (tickets 009, 016). The key value stays in the
+  `Authorization` header and in the `201` body, and gets a unique index so a
+  duplicate cannot make one credential resolve to two users.
 - **User ids are public** (they appear in task payloads), so
   `GET /users/{id}` keeps returning 404 for an unknown id.
 - **Account enumeration is accepted.** `/login` answers 401 for an unknown

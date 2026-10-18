@@ -31,17 +31,49 @@ one the caller presented. Naming the resource does not introduce sessions.
 ## In scope
 
 - `POST /auth_keys` — HTTP Basic credentials in, auth key out.
-  - `201 Created` with `Location: /auth_keys/{key}` and the key as its
+  - `201 Created` with `Location: /auth_keys/{id}` and the key as its
     representation, instead of `200` with the key buried in the body.
+  - `{id}` is the `auth_keys` primary key, **not** the key value. See "Why the
+    URI carries the id" below.
   - Ticket 004's uniform `401` applies here: unknown user and wrong password
     both answer `401` with the Basic challenge.
   - Ticket 002's challenge handling must keep the Basic challenge on this
     endpoint only.
 - `DELETE /auth_keys` — revoke the key presented in the `Authorization` header.
   Replaces `/logout`. Answers `204 No Content` (ticket 014).
-- `DELETE /auth_keys/{key}` should NOT be created.
+- `DELETE /auth_keys/{id}` should NOT be created by this ticket.
 - Keep the 401 behavior for a key that has already been revoked, and the
   expiration check in `auth_key_to_user` (`core.rs:394-423`) unchanged.
+
+## Why the URI carries the id
+
+The `Location` names the resource without being a second copy of the secret.
+An auth key is a bearer token, and RFC 6750 §5.3 is explicit about where those
+do not belong:
+
+> Bearer tokens SHOULD NOT be passed in page URLs […] Browsers, web servers,
+> and other software may not adequately secure URLs in the browser history, web
+> server logs, and other data structures.
+
+and §2.3 gives the reason — "including the high likelihood that the URL
+containing the access token will be logged".
+
+That advice is written about passing a token *as* the credential, which this
+API does not do: the key travels in `Authorization: Bearer` throughout. But
+`Location: /auth_keys/{key}` would put the same token in the request line of
+every request to that URI, which is the exposure the advice is about, and it
+would not be mitigable by any header — response headers govern whether a
+*response body* is stored, and nothing governs whether an intermediary writes
+the *request line* to its log.
+
+`auth_keys` already has `id SERIAL PRIMARY KEY`, so the resource can be
+identified the way every other resource in this API is: a task by its id, a
+share by its username, a user by its id. Addressing the auth key by its own
+secret would make it the only resource whose URI is a credential.
+
+This also makes ticket 016's endpoint possible at all, and unblocks
+`DELETE /auth_keys/{id}` — revoking a key you are not currently presenting,
+which a URI naming the key value could never express.
 
 ## Out of scope
 
@@ -49,17 +81,20 @@ one the caller presented. Naming the resource does not introduce sessions.
 - Returning a key that is not the presented one, or listing a user's keys.
 - Changing the credential format. Basic stays; the server does not switch to
   cookies or form-encoded login, which would break the stateless design.
-- Migrating `auth_keys` storage. Reusing the key value as the URI segment is
-  acceptable for a secret that is already a random UUID, but see the note
-  below.
+- Migrating `auth_keys` storage. The key value stays the credential in the
+  `Authorization` header and in the `201` body; only the URI changes. The
+  missing unique index on `key` is ticket 016's to fix.
 
 ## Acceptance criteria
 
-- [X] `POST /auth_keys` returns `201` with `Location` and the new key.
+- [X] `POST /auth_keys` returns `201` with `Location` naming the new key's URI
+      by its id, and the new key as the representation.
 - [X] `DELETE /auth_keys` revokes the presented key and returns `204`.
 - [X] After revocation, the key answers `401` on a Bearer-protected endpoint,
       with the bearer challenge.
-- [X] `/login` and `/logout` are gone.
+- [X] `/login` and `/logout` are gone. Verified against a running server, which
+      answers 404 for both; no test pins it, so nothing guards it against a
+      route reappearing.
 - [X] `/login`'s Basic challenge behavior is preserved at the new URI: missing,
       malformed, wrong-password, and unknown-user all answer `401` with
       `WWW-Authenticate: Basic realm="todo", charset="UTF-8"`.
@@ -79,5 +114,13 @@ one the caller presented. Naming the resource does not introduce sessions.
 
 `auth_keys` has no unique index on `key`
 (`migrations/2025-07-06-170925_create-auth-keys/up.sql` declares `key text NOT
-NULL` and nothing else); it works because keys are UUIDs. Worth confirming that
-stays true if the key ever becomes addressable by a user-supplied value.
+NULL` and nothing else); it works because keys are UUIDs. This stops being a
+footnote when the key becomes an identifier in its own right: `auth_key_to_user`
+filters by `key` and takes `results[0]`, so two rows sharing one key would
+silently authenticate as whichever row loaded first. Ticket 016 adds the unique
+index.
+
+The id in the `Location` is the `auth_keys` primary key. It is enumerable, and
+that is fine for the same reason task ids are: reading anything behind one
+requires a valid auth key, and an id belonging to someone else is answered
+exactly as an id that does not exist.
