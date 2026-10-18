@@ -721,6 +721,10 @@ pub async fn add_task(
 /// request has no body. Every 401 answer, whether the header was missing or
 /// malformed or the credentials were refused, carries the Basic challenge that
 /// `WWW-Authenticate` requires.
+///
+/// A refused login is refused the same way whether or not the username exists:
+/// an unknown username is a refused authentication attempt, not a missing
+/// resource, so it answers 401 and never 404.
 #[post("/login")]
 pub async fn login(credentials: Credentials) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -741,7 +745,24 @@ pub async fn login(credentials: Credentials) -> impl Responder {
             let user = match get_user_by_name(&un, &mut conn) {
                 Ok(user) => user,
                 Err(e) => {
-                    return e.into_login_http_response(&format!("{request_id}"));
+                    return match e {
+                        // A username nobody has registered is a refused
+                        // authentication attempt, not a missing resource:
+                        // neither this endpoint nor the protection space it
+                        // guards is absent, so RFC 9110 §15.5.2 describes the
+                        // answer and §15.5.5 does not. It is built by hand
+                        // rather than routed through the error mapper so that
+                        // a lookup miss here no longer decides the status a
+                        // client sees, and so the refusal is logged at the
+                        // level the rest of this endpoint logs at.
+                        ApplicationError::DieselError(diesel::result::Error::NotFound) => {
+                            event!(Level::TRACE, "No account named {}", un.as_ref());
+                            with_login_basic_challenge(
+                                HttpResponse::Unauthorized().json(error_body(request_id)),
+                            )
+                        }
+                        other => other.into_login_http_response(&format!("{request_id}")),
+                    };
                 }
             };
 
@@ -1461,26 +1482,23 @@ mod tests {
 
         // The credentials were supplied and then refused, which RFC 9110 still
         // covers with a challenge.
-        let response = login(&app, username, "not-the-correct-password").await;
-        assert_eq!(
-            response.status().as_u16(),
-            401,
-            "Login with a wrong password did not return 401."
+        let wrong_password = login(&app, username, "not-the-correct-password").await;
+        assert_unauthorized(
+            &wrong_password,
+            "Login with a wrong password did not return 401.",
         );
-        assert_basic_challenge(&response, "Refused credentials got no challenge.");
+        assert_basic_challenge(&wrong_password, "Refused credentials got no challenge.");
 
-        // An unknown username is *not* answered the same way: it gives a 404
-        // rather than a 401. A 404 needs no challenge, so none is sent.
-        let response = login(&app, "no-such-username", password).await;
-        assert_eq!(
-            response.status().as_u16(),
-            404,
-            "Login for an unknown user did not return 404."
+        // An unknown username is refused in exactly the same way. It is not a
+        // 404: this endpoint and the protection space it guards both exist, so
+        // the client is told to retry with credentials instead of being left
+        // to guess whether it addressed the wrong URI.
+        let unknown_username = login(&app, "no-such-username", password).await;
+        assert_unauthorized(
+            &unknown_username,
+            "Login for an unknown user did not return 401.",
         );
-        assert!(
-            response.headers().get(WWW_AUTHENTICATE).is_none(),
-            "A 404 must not carry the Basic challenge, which belongs to 401s."
-        );
+        assert_basic_challenge(&unknown_username, "An unknown username got no challenge.");
     }
 
     #[actix_web::test]

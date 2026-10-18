@@ -50,7 +50,9 @@ A task you may not see and a task which does not exist are deliberately indistin
 both answer 403 with the same body shape, on `GET /task\_by\_id`, `PATCH /task\_by\_id`,
 `POST /share\_task`, `GET /task\_shares`, and `DELETE /unshare\_task`. Usernames and user ids
 are public, so a real lookup miss there is still a 404: an unknown target username in
-`/share\_task` or `/unshare\_task`, and an unknown id in `/user\_by\_id`.
+`/share\_task` or `/unshare\_task`, and an unknown id in `/user\_by\_id`. A login naming a
+username no account has is not one of these misses: it is a refused authentication attempt,
+and is answered as one.
 
 ### DELETE
 
@@ -115,6 +117,10 @@ are public, so a real lookup miss there is still a 404: an unknown target userna
   - Failures: Every 401 answer carries a `WWW-Authenticate: Basic realm="todo", charset="UTF-8"`
     challenge, as RFC 9110 requires, whether the header was missing or malformed or the credentials were refused.
     No other endpoint answers with this challenge: they take an auth key, so they name the Bearer scheme instead.
+    A refused login is refused the same way whether or not the username exists: an unknown username is a refused
+    authentication attempt rather than a missing resource, so it answers 401 with the same challenge and the same
+    body as a wrong password, never 404. Only an empty or whitespace-only username is a 400, since that is a
+    malformed header rather than a refused credential.
   - Output keys:
     - auth\_key [string]: The auth\_key which can be used for requests that require authentication
 - /add\_task: Creates a new task
