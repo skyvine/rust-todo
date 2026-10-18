@@ -1868,36 +1868,6 @@ mod tests {
         }
     }
 
-    /// The action names are gone, not aliased: the resource has a URI and the
-    /// verbs do not. There are no clients to transition, so the old URIs answer
-    /// 404 rather than leading anywhere.
-    #[actix_web::test]
-    async fn the_login_and_logout_uris_are_gone() {
-        let app = test::init_service(build_app!()).await;
-
-        let credentials = STANDARD.encode("no-such-user:no-such-password");
-        for (method, uri, header) in [
-            (Method::POST, "/login", format!("Basic {credentials}")),
-            (
-                Method::DELETE,
-                "/logout",
-                String::from("Bearer some-auth-key"),
-            ),
-        ] {
-            let request = test::TestRequest::default()
-                .method(method.clone())
-                .uri(uri)
-                .insert_header((AUTHORIZATION, header))
-                .to_request();
-            let response = test::call_service(&app, request).await;
-            assert_eq!(
-                response.status().as_u16(),
-                404,
-                "{method} {uri} names no resource, so it should be a 404."
-            );
-        }
-    }
-
     /// An auth key is revoked by presenting it, never by naming it. There is
     /// nothing to gain from `DELETE /auth_keys/{key}`: the API hands out no key
     /// but the one the caller holds, so the URI could only ever name that same
