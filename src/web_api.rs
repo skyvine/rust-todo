@@ -1070,7 +1070,6 @@ mod tests {
     use actix_web::{App, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
-    use serde::Deserialize;
     use tracing_subscriber::{EnvFilter, fmt};
     use uuid::Uuid;
 
