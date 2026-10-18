@@ -616,7 +616,15 @@ pub fn get_user_by_name(
     }
 }
 
-pub fn logout(auth_key: &str, connection: &mut PgConnection) -> Result<(), ApplicationError> {
+/// Revoke the auth key which was presented, by deleting its row.
+///
+/// A key which is not there is not a failure: revoking an auth key is a
+/// `DELETE`, which is idempotent, so revoking a key which is already gone
+/// leaves the state the caller asked for.
+pub fn revoke_auth_key(
+    auth_key: &str,
+    connection: &mut PgConnection,
+) -> Result<(), ApplicationError> {
     use crate::schema::auth_keys::dsl::*;
 
     let query = diesel::delete(auth_keys.filter(key.eq(auth_key)));

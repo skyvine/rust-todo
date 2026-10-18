@@ -55,25 +55,25 @@ one the caller presented. Naming the resource does not introduce sessions.
 
 ## Acceptance criteria
 
-- [ ] `POST /auth_keys` returns `201` with `Location` and the new key.
-- [ ] `DELETE /auth_keys` revokes the presented key and returns `204`.
-- [ ] After revocation, the key answers `401` on a Bearer-protected endpoint,
+- [X] `POST /auth_keys` returns `201` with `Location` and the new key.
+- [X] `DELETE /auth_keys` revokes the presented key and returns `204`.
+- [X] After revocation, the key answers `401` on a Bearer-protected endpoint,
       with the bearer challenge.
-- [ ] `/login` and `/logout` are gone.
-- [ ] `/login`'s Basic challenge behavior is preserved at the new URI: missing,
+- [X] `/login` and `/logout` are gone.
+- [X] `/login`'s Basic challenge behavior is preserved at the new URI: missing,
       malformed, wrong-password, and unknown-user all answer `401` with
       `WWW-Authenticate: Basic realm="todo", charset="UTF-8"`.
-- [ ] `login_password_may_contain_a_colon` still passes at the new URI.
-- [ ] Tests updated: the `login` and `register_and_login` helpers,
+- [X] `login_password_may_contain_a_colon` still passes at the new URI.
+- [X] Tests updated: the `login` and `register_and_login` helpers,
       `login_requires_basic_authorization_header`,
       `refused_credentials_are_challenged_too`, `login_password_may_contain_a_colon`,
       `can_logout`, `invalid_password_fails`, `auth_key_is_recognized`.
-- [ ] `http_requests/post_login.http` updated.
-- [ ] `README.md` documents `/auth_keys`, including that Basic is still the
+- [X] `http_requests/post_login.http` updated.
+- [X] `README.md` documents `/auth_keys`, including that Basic is still the
       credential format and that the key goes in `Authorization: Bearer`.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [X] `cargo clippy` passes with no new warnings.
+- [X] `cargo test` passes.
+- [X] `cargo fmt --check` passes.
 
 ## Notes
 

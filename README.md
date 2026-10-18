@@ -33,8 +33,8 @@ next: `error="invalid_request"` when the header was missing or malformed,
 `error="invalid_token"` when an auth key was presented but is unknown or expired, and
 `error="insufficient_scope"` when the key was accepted but the request is still refused.
 Only one challenge is sent, so the realm is sent on its own where no error code applies.
-/login, the one endpoint which takes credentials rather than an auth key, answers its own
-401s with the Basic challenge instead.
+`POST /auth_keys`, the one endpoint which takes credentials rather than an auth key, answers
+its own 401s with the Basic challenge instead.
 
 A rejected request is reported as one of two statuses, and the difference tells the client
 whether authenticating again could ever help:
@@ -51,8 +51,8 @@ both answer 403 with the same body shape, on every verb which acts on a task: `G
 `PATCH /tasks/{id}`, `GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
 `DELETE /tasks/{id}/shares/{username}`. Usernames and user ids are public, so a real lookup
 miss there is still a 404: an unknown target username in a `PUT` or `DELETE` on a share, and
-an unknown id in `/user\_by\_id`. A login naming a username no account has is not one of these
-misses: it is a refused authentication attempt, and is answered as one.
+an unknown id in `/user\_by\_id`. `POST /auth_keys` naming a username no account has is not one
+of these misses: it is a refused authentication attempt, and is answered as one.
 
 ### Tasks
 
@@ -69,7 +69,7 @@ changed, and nothing removes it.
   tasks shared with them (read or read-write). The collection is not paginated or sorted;
   every task matching the filter is returned, in the order the database yields them.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
+    where it is an auth key as returned by `POST /auth_keys`.
   - Query parameters:
     - completed \[bool] (optional): Return only the tasks whose completed state is this
       value, e.g. `GET /tasks?completed=false` for the incomplete tasks. The parameter
@@ -84,7 +84,7 @@ changed, and nothing removes it.
     the auth key is missing, malformed, unknown, or expired.
 - `POST /tasks`: Creates a task.
   - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by `POST /auth_keys`.
     - title [string]: The title of the new task (should be short)
     - description \[string] (optional): A description of the task (could be long)
   - Output keys:
@@ -95,7 +95,7 @@ changed, and nothing removes it.
 - `GET /tasks/{id}`: Retrieve the contents of the task the URI names. Shared access
   (read or read-write) is honored.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
+    where it is an auth key as returned by `POST /auth_keys`.
   - Path parameters:
     - id [number]: The id of the task, e.g. `GET /tasks/1`.
   - Output keys:
@@ -107,7 +107,7 @@ changed, and nothing removes it.
 - `PATCH /tasks/{id}`: Changes some or all of the data contained in a task. Read-write
   shared access is honored: a user with a `read\_write` share may update the task.
   - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
+    - auth\_key [string]: An auth key as returned by `POST /auth_keys`.
     - completed \[bool] (optional): The new completed status of the task.
     - title \[string] (optional): The new title of the task.
     - description \[string] (optional): The new description of the task.
@@ -126,7 +126,7 @@ its shares; a `read_write` grantee may edit the task itself but not share it onw
 
 - `GET /tasks/{id}/shares`: List the shares on the task.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
+    where it is an auth key as returned by `POST /auth_keys`.
   - Path parameters:
     - id [number]: The id of the task whose shares to list, e.g. `GET /tasks/1/shares`.
   - Output keys:
@@ -165,7 +165,7 @@ its shares; a `read_write` grantee may edit the task itself but not share it onw
   on, and RFC 9110 §9.3.5 gives content in a `DELETE` no defined meaning, so any
   intermediary which strips such a body would otherwise break the request.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
+    where it is an auth key as returned by `POST /auth_keys`.
   - Path parameters:
     - id [number]: The id of the task the share is on, e.g. `DELETE /tasks/1/shares/alice`.
     - username [string]: The name of the user whose access to remove.
@@ -175,25 +175,71 @@ its shares; a `read_write` grantee may edit the task itself but not share it onw
     account has; `403` if the task is not the caller's, and for a task which does not
     exist; `401` if the auth key is missing, malformed, unknown, or expired.
 
+### Auth keys
+
+An auth key is a secret the API issues to a caller and accepts back on every later request,
+so it is a resource at one URI, `/auth_keys`, rather than a login and a logout. The API is
+stateless: there is no session and no cookie. The key is presented in the
+`Authorization: Bearer <auth_key>` header like any other credential, and a client which wants
+to stop using one revokes it.
+
+Credentials are still exchanged with HTTP Basic. `POST /auth_keys` is the only endpoint which
+takes a username and a password; every other endpoint takes an auth key and answers its 401s
+with the Bearer challenge instead.
+
+- `POST /auth_keys`: Creates an auth key for the account the credentials name. This is what
+  logging in is: the credentials go out in the header and never in a body, and what comes back
+  is a new key.
+  - Takes no body. Authentication: HTTP Basic. Send an
+    `Authorization: Basic <base64(username:password)>` header; the username and password are
+    the ones belonging to the account.
+  - Output keys:
+    - auth\_key [string]: The auth key, which the client sends as
+      `Authorization: Bearer <auth_key>` on every endpoint which needs one.
+  - Statuses: `201 Created`, with a `Location: /auth_keys/{key}` header naming the URI of the
+    key just created and the key itself as its representation, so a client never has to ask a
+    second question to learn what it was handed. Every 401 answer carries a
+    `WWW-Authenticate: Basic realm="todo", charset="UTF-8"` challenge, as RFC 9110 requires,
+    whether the header was missing or malformed or the credentials were refused; no other
+    endpoint answers with this challenge, because they take an auth key and so name the Bearer
+    scheme instead. A refused attempt is refused the same way whether or not the username
+    exists: an unknown username is a refused authentication attempt rather than a missing
+    resource, so it answers 401 with the same challenge and the same body as a wrong password,
+    never 404. Only an empty or whitespace-only username is a `400`, since that is a malformed
+    header rather than a refused credential.
+- `DELETE /auth_keys`: Revokes the auth key the caller presented, so it stops working
+  immediately.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header, where it
+    is an auth key as returned by `POST /auth_keys`.
+  - Statuses: `204 No Content`, whether or not the key was there: `DELETE` is idempotent, so
+    revoking a key which is already gone leaves the state the caller asked for and is answered
+    exactly as the removal which got it there was. A key which has been revoked answers `401`
+    with the bearer challenge on every endpoint which takes one.
+
+There is no `DELETE /auth_keys/{key}`, and no `GET` on a key either. The API never hands out a
+key other than the one the caller presented, so a URI naming a key could only ever name that
+same one: the `Location` above identifies the key a client was given, and removing it is done
+by presenting it. A revoked key stops working at once rather than at some later expiry, and
+nothing refreshes or rotates it.
+
 ### DELETE
 
-- /logout: Disable an auth key
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
 - /tasks/{id}/shares/{username}: Remove a user's access to a task owned by the caller. It
   takes no body, and is documented above with the rest of the shares.
+- /auth\_keys: Revoke the auth key the caller presented. It takes no body, and is documented
+  above under [Auth keys](#auth-keys).
 
 ### GET
 
 - /is\_alive: unconditionally returns an Ok status
 - /whoami: Retrieves the username of the currently logged in user
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
+    where it is an auth key as returned by `POST /auth_keys`.
   - Output keys:
     - username [string]: The name of the user associated with the auth\_key
 - /user\_by\_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
+    where it is an auth key as returned by `POST /auth_keys`.
   - Query parameters:
     - id [number]: The id of the user to resolve, e.g. `GET /user\_by\_id?id=1`.
   - Output keys:
@@ -205,24 +251,16 @@ its shares; a `read_write` grantee may edit the task itself but not share it onw
   - Input keys:
     - username [string]: The username for the new account. Must not already exist.
     - password [string]: The password for the new account.
-- /login: Generates a new auth key which can be used in future requests.
-  - Authentication: HTTP Basic. Send an `Authorization: Basic <base64(username:password)>`
-    header and no request body; the username and password are the ones belonging to the account.
-  - Failures: Every 401 answer carries a `WWW-Authenticate: Basic realm="todo", charset="UTF-8"`
-    challenge, as RFC 9110 requires, whether the header was missing or malformed or the credentials were refused.
-    No other endpoint answers with this challenge: they take an auth key, so they name the Bearer scheme instead.
-    A refused login is refused the same way whether or not the username exists: an unknown username is a refused
-    authentication attempt rather than a missing resource, so it answers 401 with the same challenge and the same
-    body as a wrong password, never 404. Only an empty or whitespace-only username is a 400, since that is a
-    malformed header rather than a refused credential.
-  - Output keys:
-    - auth\_key [string]: The auth\_key which can be used for requests that require authentication
+- /auth\_keys: Creates an auth key from HTTP Basic credentials, or revokes the one the caller
+  presents. Both are documented above under [Auth keys](#auth-keys).
 
 The task endpoints are documented together, under [Tasks](#tasks); the collection is
 `GET /tasks`, and `GET /tasks/{id}`, `POST /tasks`, and `PATCH /tasks/{id}` are the same
 resource at one URI. Their shares are documented together under [Shares](#shares), and
 `GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
-`DELETE /tasks/{id}/shares/{username}` are the same share resource at one URI.
+`DELETE /tasks/{id}/shares/{username}` are the same share resource at one URI. The auth key
+endpoints are documented together under [Auth keys](#auth-keys), and `POST /auth_keys` and
+`DELETE /auth_keys` are the same resource at one URI.
 
 ### PATCH
 

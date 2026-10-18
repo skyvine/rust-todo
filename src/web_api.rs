@@ -1,7 +1,7 @@
 use crate::core::{
     ApplicationError, Permission, Share, SharePermission, ShareWrite, add_share_for_task, add_user,
     auth_key_to_user, establish_connection, get_new_auth_key, get_task_permission,
-    get_tasks_for_user, get_user_by_name, list_shares_for_task, remove_share,
+    get_tasks_for_user, get_user_by_name, list_shares_for_task, remove_share, revoke_auth_key,
 };
 use crate::domain_types::{
     AuthKey, CleartextPassword, Credentials, TaskDescription, TaskTitle, Username,
@@ -118,14 +118,15 @@ impl ApplicationError {
         with_challenge(self.into_status_response(request_id), challenge)
     }
 
-    /// The response for an error on `/login`: the same status and body, with
-    /// the Basic challenge on a 401 instead.
+    /// The response for an error on the endpoint which takes credentials
+    /// (`POST /auth_keys`): the same status and body, with the Basic challenge
+    /// on a 401 instead.
     ///
-    /// `/login` is the only endpoint which takes credentials, so this is the
-    /// only place the Basic scheme is offered: a 401 anywhere else answers
-    /// with a bearer challenge.
-    fn into_login_http_response(self, request_id: &String) -> HttpResponse {
-        with_login_basic_challenge(self.into_status_response(request_id))
+    /// It is the only endpoint which takes credentials, so this is the only
+    /// place the Basic scheme is offered: a 401 anywhere else answers with a
+    /// bearer challenge.
+    fn into_basic_http_response(self, request_id: &String) -> HttpResponse {
+        with_basic_challenge(self.into_status_response(request_id))
     }
 }
 
@@ -138,18 +139,18 @@ const BEARER_SCHEME: &str = "Bearer";
 /// password.
 const BASIC_SCHEME: &str = "Basic";
 
-/// The challenge which every 401 from `/login` carries, naming the protection
-/// space this server guards.
+/// The challenge which every 401 from the endpoint which takes credentials
+/// (`POST /auth_keys`) carries, naming the protection space this server guards.
 ///
 /// RFC 7617 requires the realm and permits the optional charset, whose only
 /// allowed value is UTF-8: that is the encoding this server reads credentials
 /// as.
-const LOGIN_BASIC_CHALLENGE: &str = "Basic realm=\"todo\", charset=\"UTF-8\"";
+const BASIC_CHALLENGE: &str = "Basic realm=\"todo\", charset=\"UTF-8\"";
 
 /// The challenge which a 401 or a 403 from a Bearer-protected endpoint falls
 /// back to when no RFC 6750 error code applies, naming the same realm as
-/// [`LOGIN_BASIC_CHALLENGE`]: the whole API is one protection space, only the
-/// scheme which guards it differs.
+/// [`BASIC_CHALLENGE`]: the whole API is one protection space, only the scheme
+/// which guards it differs.
 const BEARER_CHALLENGE: &str = "Bearer realm=\"todo\"";
 
 /// The challenge for a request whose `Authorization` header was missing or
@@ -257,13 +258,14 @@ fn with_challenge(mut response: HttpResponse, challenge: &'static str) -> HttpRe
     response
 }
 
-/// Puts the Basic challenge on a 401 from `/login`.
+/// Puts the Basic challenge on a 401 from the endpoint which takes
+/// credentials.
 ///
-/// `/login` is the only endpoint which takes credentials, so it is the only
+/// That endpoint is the only one which takes credentials, so it is the only
 /// place the Basic scheme is ever offered: every other challenge names its own
 /// scheme at its call site instead of relying on this one replacing it.
-fn with_login_basic_challenge(response: HttpResponse) -> HttpResponse {
-    with_challenge(response, LOGIN_BASIC_CHALLENGE)
+fn with_basic_challenge(response: HttpResponse) -> HttpResponse {
+    with_challenge(response, BASIC_CHALLENGE)
 }
 
 /// Turns a missing or malformed Basic `Authorization` header into the 401 that
@@ -279,7 +281,7 @@ fn unauthorized_basic_error(request_id: Uuid) -> Error {
     );
     InternalError::from_response(
         "Missing or malformed Basic Authorization header",
-        with_login_basic_challenge(HttpResponse::Unauthorized().json(error_body(request_id))),
+        with_basic_challenge(HttpResponse::Unauthorized().json(error_body(request_id))),
     )
     .into()
 }
@@ -430,6 +432,17 @@ fn share_uri(task_id: i32, username: &str) -> String {
     format!("/tasks/{task_id}/shares/{username}")
 }
 
+/// The URI of one auth key: the one URI which identifies it.
+///
+/// A created key answers with this in a `Location`, so a client holds the URI
+/// of what it was given as well as the key itself. Nothing is served at it —
+/// the API never hands out a key other than the one the caller presented — so
+/// it identifies the key rather than offering it for reading or removal by
+/// name.
+fn auth_key_uri(key: &str) -> String {
+    format!("/auth_keys/{key}")
+}
+
 /// A share in a response body: the id of the share itself, the username it is
 /// for, and the permission it grants.
 ///
@@ -443,16 +456,119 @@ fn share_body(share: &Share) -> serde_json::Value {
     })
 }
 
-// DELETE endpoints
+// Auth keys
 
-#[delete("/logout")]
-pub async fn logout(auth_key: AuthKey) -> impl Responder {
+/// Creates an auth key for the account the credentials name, and answers
+/// `201 Created` with a `Location` naming the key's URI.
+///
+/// The credentials are read from an HTTP Basic `Authorization` header, so a
+/// request has no body. Every 401 answer, whether the header was missing or
+/// malformed or the credentials were refused, carries the Basic challenge that
+/// `WWW-Authenticate` requires.
+///
+/// A refused attempt is refused the same way whether or not the username
+/// exists: an unknown username is a refused authentication attempt, not a
+/// missing resource, so it answers 401 and never 404.
+///
+/// The new key is the whole representation, in the body and in the `Location`,
+/// so a client never has to ask a second question to learn what it was given.
+/// The API stays stateless: the key is presented in `Authorization: Bearer` on
+/// every later request, and this endpoint is the only one which takes
+/// credentials rather than a key.
+#[post("/auth_keys")]
+pub async fn create_auth_key(credentials: Credentials) -> impl Responder {
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Logout", %request_id).entered();
+    let _enter_guard = span!(Level::ERROR, "Create Auth Key", %request_id).entered();
+
+    let (raw_username, pw) = credentials.into_parts();
+
+    let un = match Username::new(raw_username) {
+        Ok(un) => un,
+        Err(message) => {
+            event!(Level::ERROR, "{message}");
+            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
+        }
+    };
 
     match establish_connection() {
-        Ok(mut connection) => match crate::core::logout(auth_key.as_str(), &mut connection) {
-            Ok(()) => HttpResponse::Ok().finish(),
+        Ok(mut conn) => {
+            let user = match get_user_by_name(&un, &mut conn) {
+                Ok(user) => user,
+                Err(e) => {
+                    return match e {
+                        // A username nobody has registered is a refused
+                        // authentication attempt, not a missing resource:
+                        // neither this endpoint nor the protection space it
+                        // guards is absent, so RFC 9110 §15.5.2 describes the
+                        // answer and §15.5.5 does not. It is built by hand
+                        // rather than routed through the error mapper so that
+                        // a lookup miss here no longer decides the status a
+                        // client sees, and so the refusal is logged at the
+                        // level the rest of this endpoint logs at.
+                        ApplicationError::DieselError(diesel::result::Error::NotFound) => {
+                            event!(Level::TRACE, "No account named {}", un.as_ref());
+                            with_basic_challenge(
+                                HttpResponse::Unauthorized().json(error_body(request_id)),
+                            )
+                        }
+                        other => other.into_basic_http_response(&format!("{request_id}")),
+                    };
+                }
+            };
+
+            let hashed_password = match PasswordHash::new(user.ref_password()) {
+                Ok(ph) => ph,
+                Err(e) => {
+                    event!(
+                        Level::ERROR,
+                        "Unable to parse hashed password ({}): {e:?}",
+                        user.ref_password()
+                    );
+                    return HttpResponse::InternalServerError().json(error_body(request_id));
+                }
+            };
+
+            match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
+                Ok(auth_key) => {
+                    let auth_key = format!("{auth_key}");
+                    HttpResponse::Created()
+                        .insert_header((actix_web::http::header::LOCATION, auth_key_uri(&auth_key)))
+                        .json(
+                            json!({ "request_id": format!("{request_id}"), "auth_key": auth_key }),
+                        )
+                }
+                Err(e) => e.into_basic_http_response(&format!("{request_id}")),
+            }
+        }
+        Err(e) => {
+            event!(
+                Level::ERROR,
+                "Unable to establish connection to database: {e}"
+            );
+            HttpResponse::InternalServerError().json(error_body(request_id))
+        }
+    }
+}
+
+/// Revokes the auth key the caller presented, so it stops working at once.
+///
+/// The key is the one in the `Authorization` header rather than one named by
+/// the URI: the API never hands out a key other than the one the caller
+/// presented, so there is no way to name somebody else's key, and a caller
+/// revoking its own key is all this does. Naming a session instead would be a
+/// different resource, and this API has none.
+///
+/// A key which is not there is not a failure: `DELETE` is idempotent, so
+/// revoking a key which was already revoked leaves the state the caller asked
+/// for and is answered exactly as the removal which got it there was.
+#[delete("/auth_keys")]
+pub async fn delete_auth_key(auth_key: AuthKey) -> impl Responder {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Delete Auth Key", %request_id).entered();
+
+    match establish_connection() {
+        Ok(mut connection) => match revoke_auth_key(auth_key.as_str(), &mut connection) {
+            Ok(()) => HttpResponse::NoContent().finish(),
             Err(e) => e.into_http_response(&format!("{request_id}")),
         },
         Err(e) => {
@@ -755,84 +871,6 @@ pub async fn add_task(
         }
     }
 }
-/// Gives a new auth key to the user.
-///
-/// The credentials are read from an HTTP Basic `Authorization` header, so a
-/// request has no body. Every 401 answer, whether the header was missing or
-/// malformed or the credentials were refused, carries the Basic challenge that
-/// `WWW-Authenticate` requires.
-///
-/// A refused login is refused the same way whether or not the username exists:
-/// an unknown username is a refused authentication attempt, not a missing
-/// resource, so it answers 401 and never 404.
-#[post("/login")]
-pub async fn login(credentials: Credentials) -> impl Responder {
-    let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Login", %request_id).entered();
-
-    let (raw_username, pw) = credentials.into_parts();
-
-    let un = match Username::new(raw_username) {
-        Ok(un) => un,
-        Err(message) => {
-            event!(Level::ERROR, "{message}");
-            return HttpResponse::BadRequest().json(error_body_with_message(request_id, message));
-        }
-    };
-
-    match establish_connection() {
-        Ok(mut conn) => {
-            let user = match get_user_by_name(&un, &mut conn) {
-                Ok(user) => user,
-                Err(e) => {
-                    return match e {
-                        // A username nobody has registered is a refused
-                        // authentication attempt, not a missing resource:
-                        // neither this endpoint nor the protection space it
-                        // guards is absent, so RFC 9110 §15.5.2 describes the
-                        // answer and §15.5.5 does not. It is built by hand
-                        // rather than routed through the error mapper so that
-                        // a lookup miss here no longer decides the status a
-                        // client sees, and so the refusal is logged at the
-                        // level the rest of this endpoint logs at.
-                        ApplicationError::DieselError(diesel::result::Error::NotFound) => {
-                            event!(Level::TRACE, "No account named {}", un.as_ref());
-                            with_login_basic_challenge(
-                                HttpResponse::Unauthorized().json(error_body(request_id)),
-                            )
-                        }
-                        other => other.into_login_http_response(&format!("{request_id}")),
-                    };
-                }
-            };
-
-            let hashed_password = match PasswordHash::new(user.ref_password()) {
-                Ok(ph) => ph,
-                Err(e) => {
-                    event!(
-                        Level::ERROR,
-                        "Unable to parse hashed password ({}): {e:?}",
-                        user.ref_password()
-                    );
-                    return HttpResponse::InternalServerError().json(error_body(request_id));
-                }
-            };
-
-            match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
-                Ok(auth_key) => HttpResponse::Ok().json(json!({ "request_id": format!("{request_id}"), "auth_key": format!("{auth_key}")})),
-                Err(e) => e.into_login_http_response(&format!("{request_id}")),
-            }
-        }
-        Err(e) => {
-            event!(
-                Level::ERROR,
-                "Unable to establish connection to database: {e}"
-            );
-            HttpResponse::InternalServerError().json(error_body(request_id))
-        }
-    }
-}
-
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct UserRegistrationPayload {
     username: String,
@@ -1203,7 +1241,8 @@ mod tests {
     /// Only one challenge may be sent per header field, so a client which
     /// found a second one would have no way to tell which scheme to retry
     /// with: the Basic challenge must not reach an endpoint which takes an
-    /// auth key, nor the bearer challenge reach `/login`.
+    /// auth key, nor the bearer challenge reach the one which takes
+    /// credentials.
     fn assert_only_challenge(response: &ServiceResponse, expected: &str, message: &str) {
         let challenges: Vec<&str> = response
             .headers()
@@ -1220,7 +1259,7 @@ mod tests {
     /// Asserts that a 401 carries the challenge a Basic client needs in order
     /// to know what to retry with.
     fn assert_basic_challenge(response: &ServiceResponse, message: &str) {
-        assert_only_challenge(response, super::LOGIN_BASIC_CHALLENGE, message);
+        assert_only_challenge(response, super::BASIC_CHALLENGE, message);
     }
 
     /// Asserts that a 403 names the reason the credentials were accepted and
@@ -1269,7 +1308,9 @@ mod tests {
         );
     }
 
-    async fn register_and_login<E: std::fmt::Debug>(
+    /// Registers an account and returns the auth key it gets, the way a client
+    /// which wants to go straight on to using the API does.
+    async fn register_and_create_auth_key<E: std::fmt::Debug>(
         app: impl Service<Request, Response = ServiceResponse, Error = E>,
         username: &str,
         password: &str,
@@ -1278,9 +1319,11 @@ mod tests {
             register(&app, username, password).await,
             "Unable to register account",
         );
-        let login_response =
-            assert_response_success(login(&app, username, password).await, "Could not login.");
-        extract_json_string(login_response, "auth_key")
+        let created = assert_response_success(
+            create_auth_key(&app, username, password).await,
+            "Could not create an auth key.",
+        );
+        extract_json_string(created, "auth_key")
     }
 
     async fn register<E: std::fmt::Debug>(
@@ -1298,14 +1341,16 @@ mod tests {
         test::call_service(&app, request).await
     }
 
-    async fn login<E: std::fmt::Debug>(
+    /// Exchanges credentials for an auth key at the auth key resource's own
+    /// collection URI, the way a client authenticating for the first time does.
+    async fn create_auth_key<E: std::fmt::Debug>(
         app: impl Service<Request, Response = ServiceResponse, Error = E>,
         username: &str,
         password: &str,
     ) -> ServiceResponse {
         let credentials = STANDARD.encode(format!("{username}:{password}"));
         let request = test::TestRequest::post()
-            .uri("/login")
+            .uri("/auth_keys")
             .insert_header((AUTHORIZATION, format!("Basic {credentials}")))
             .to_request();
         test::call_service(&app, request).await
@@ -1474,7 +1519,8 @@ mod tests {
         let password = String::from("auth-key-registered-password");
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
+        let auth_key =
+            register_and_create_auth_key(&app, username.as_str(), password.as_str()).await;
 
         let whoami_request = test::TestRequest::get()
             .uri("/whoami")
@@ -1500,53 +1546,53 @@ mod tests {
             "Unable to register account",
         );
 
-        let response = login(&app, username, "not-the-correct-password").await;
+        let response = create_auth_key(&app, username, "not-the-correct-password").await;
         assert_client_error(response, "Response did not indicate client error");
     }
 
     #[actix_web::test]
-    async fn login_requires_basic_authorization_header() {
+    async fn creating_an_auth_key_requires_basic_authorization_header() {
         let app = test::init_service(build_app!()).await;
 
         // No Authorization header at all.
-        let request = test::TestRequest::post().uri("/login").to_request();
+        let request = test::TestRequest::post().uri("/auth_keys").to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
-            "Login without an Authorization header did not return 401."
+            "POST /auth_keys without an Authorization header did not return 401."
         );
         assert_basic_challenge(&response, "A missing header got no challenge.");
 
         // An auth key is not a credential pair, so the wrong scheme is refused.
         let request = test::TestRequest::post()
-            .uri("/login")
+            .uri("/auth_keys")
             .insert_header((AUTHORIZATION, "Bearer some-auth-key"))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
-            "Login with a Bearer header did not return 401."
+            "POST /auth_keys with a Bearer header did not return 401."
         );
         assert_basic_challenge(&response, "A wrong scheme got no challenge.");
 
         // A token which is not base64.
         let request = test::TestRequest::post()
-            .uri("/login")
+            .uri("/auth_keys")
             .insert_header((AUTHORIZATION, "Basic not-valid-base64!"))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
-            "Login with an undecodable token did not return 401."
+            "POST /auth_keys with an undecodable token did not return 401."
         );
         assert_basic_challenge(&response, "An undecodable token got no challenge.");
 
         // Valid base64, but the decoded text has no colon to split on.
         let request = test::TestRequest::post()
-            .uri("/login")
+            .uri("/auth_keys")
             .insert_header((
                 AUTHORIZATION,
                 format!("Basic {}", STANDARD.encode("no-colon")),
@@ -1556,7 +1602,7 @@ mod tests {
         assert_eq!(
             response.status().as_u16(),
             401,
-            "Login with a token missing a colon did not return 401."
+            "POST /auth_keys with a token missing a colon did not return 401."
         );
         assert_basic_challenge(&response, "A token missing a colon got no challenge.");
     }
@@ -1574,21 +1620,18 @@ mod tests {
 
         // The credentials were supplied and then refused, which RFC 9110 still
         // covers with a challenge.
-        let wrong_password = login(&app, username, "not-the-correct-password").await;
-        assert_unauthorized(
-            &wrong_password,
-            "Login with a wrong password did not return 401.",
-        );
+        let wrong_password = create_auth_key(&app, username, "not-the-correct-password").await;
+        assert_unauthorized(&wrong_password, "A wrong password did not return 401.");
         assert_basic_challenge(&wrong_password, "Refused credentials got no challenge.");
 
         // An unknown username is refused in exactly the same way. It is not a
         // 404: this endpoint and the protection space it guards both exist, so
         // the client is told to retry with credentials instead of being left
         // to guess whether it addressed the wrong URI.
-        let unknown_username = login(&app, "no-such-username", password).await;
+        let unknown_username = create_auth_key(&app, "no-such-username", password).await;
         assert_unauthorized(
             &unknown_username,
-            "Login for an unknown user did not return 401.",
+            "Credentials for an unknown user did not return 401.",
         );
         assert_basic_challenge(&unknown_username, "An unknown username got no challenge.");
     }
@@ -1668,10 +1711,10 @@ mod tests {
         let password = "challenged-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "private task", None).await;
 
-        let stranger_key = register_and_login(&app, stranger_username, password).await;
+        let stranger_key = register_and_create_auth_key(&app, stranger_username, password).await;
         let request = test::TestRequest::get()
             .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
@@ -1691,13 +1734,16 @@ mod tests {
         );
     }
 
+    /// A password is separated from the username by the first colon and nothing
+    /// else, so one may hold colons of its own. Only the endpoint which takes
+    /// credentials ever sees one, and it still does at `POST /auth_keys`.
     #[actix_web::test]
     async fn login_password_may_contain_a_colon() {
         let username = "colon-password-username";
         let password = "colon:password:with:colons";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let whoami_request = test::TestRequest::get()
             .uri("/whoami")
@@ -1710,21 +1756,79 @@ mod tests {
         assert_eq!(extract_json_string(whoami_response, "username"), username);
     }
 
+    /// An auth key is created at a URI of its own, so the creation has to say
+    /// which one: the `Location` names the key the client was just given, and
+    /// the body carries that same key as the created representation.
     #[actix_web::test]
-    async fn can_logout() {
-        let username = "can-logout-username";
-        let password = "can-logout-password";
+    async fn a_created_auth_key_is_at_the_uri_it_reports() {
+        let username = "auth-key-location-username";
+        let password = "auth-key-location-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
 
-        let logout_request = test::TestRequest::delete()
-            .uri("/logout")
+        let created = assert_response_success(
+            create_auth_key(&app, username, password).await,
+            "Could not create an auth key.",
+        );
+        assert_eq!(
+            created.status().as_u16(),
+            201,
+            "Credentials which were accepted create an auth key."
+        );
+
+        let location = created
+            .headers()
+            .get(LOCATION)
+            .expect("A 201 must name the auth key it created.")
+            .to_str()
+            .expect("A Location is ASCII.")
+            .to_string();
+        let auth_key = extract_json_string(created, "auth_key");
+        assert_eq!(
+            location,
+            format!("/auth_keys/{auth_key}"),
+            "The Location of a created auth key is the URI of that key."
+        );
+
+        // The key the client was handed is one the server accepts.
+        let whoami_request = test::TestRequest::get()
+            .uri("/whoami")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let whoami_response = assert_response_success(
+            test::call_service(&app, whoami_request).await,
+            "The created auth key does not work.",
+        );
+        assert_eq!(extract_json_string(whoami_response, "username"), username);
+    }
+
+    /// Revoking an auth key removes the one the caller presented, and the key
+    /// stops working at once: a Bearer-protected endpoint answers 401 with the
+    /// challenge which tells the client to get a new one.
+    #[actix_web::test]
+    async fn can_revoke_an_auth_key() {
+        let username = "can-revoke-auth-key-username";
+        let password = "can-revoke-auth-key-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
+
+        let revoke_request = test::TestRequest::delete()
+            .uri("/auth_keys")
             .insert_header((AUTHORIZATION, format!("bearer {auth_key}")))
             .to_request();
-        assert_response_success(
-            test::call_service(&app, logout_request).await,
-            "Unable to log out.",
+        let revoke_response = assert_response_success(
+            test::call_service(&app, revoke_request).await,
+            "Unable to revoke an auth key.",
+        );
+        assert_eq!(
+            revoke_response.status().as_u16(),
+            204,
+            "A revoked auth key has nothing left to say about it."
         );
 
         let whoami_request = test::TestRequest::get()
@@ -1732,10 +1836,100 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let whoami_response = test::call_service(&app, whoami_request).await;
+        assert_unauthorized(
+            &whoami_response,
+            "A revoked auth key should not authenticate anything.",
+        );
+        assert_only_challenge(
+            &whoami_response,
+            super::BEARER_INVALID_TOKEN_CHALLENGE,
+            "A revoked auth key got no challenge telling the client to get new credentials.",
+        );
+    }
+
+    /// `DELETE` is idempotent, so revoking a key which is not there asks for the
+    /// state the caller already has and is answered exactly as the removal
+    /// which got it there was.
+    #[actix_web::test]
+    async fn revoking_an_auth_key_which_is_not_there_is_a_204() {
+        let app = test::init_service(build_app!()).await;
+
+        for _ in 0..2 {
+            let revoke_request = test::TestRequest::delete()
+                .uri("/auth_keys")
+                .insert_header((AUTHORIZATION, "Bearer this-key-was-never-issued"))
+                .to_request();
+            let revoke_response = test::call_service(&app, revoke_request).await;
+            assert_eq!(
+                revoke_response.status().as_u16(),
+                204,
+                "Revoking an absent auth key leaves the state asked for."
+            );
+        }
+    }
+
+    /// The action names are gone, not aliased: the resource has a URI and the
+    /// verbs do not. There are no clients to transition, so the old URIs answer
+    /// 404 rather than leading anywhere.
+    #[actix_web::test]
+    async fn the_login_and_logout_uris_are_gone() {
+        let app = test::init_service(build_app!()).await;
+
+        let credentials = STANDARD.encode("no-such-user:no-such-password");
+        for (method, uri, header) in [
+            (Method::POST, "/login", format!("Basic {credentials}")),
+            (
+                Method::DELETE,
+                "/logout",
+                String::from("Bearer some-auth-key"),
+            ),
+        ] {
+            let request = test::TestRequest::default()
+                .method(method.clone())
+                .uri(uri)
+                .insert_header((AUTHORIZATION, header))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(
+                response.status().as_u16(),
+                404,
+                "{method} {uri} names no resource, so it should be a 404."
+            );
+        }
+    }
+
+    /// An auth key is revoked by presenting it, never by naming it. There is
+    /// nothing to gain from `DELETE /auth_keys/{key}`: the API hands out no key
+    /// but the one the caller holds, so the URI could only ever name that same
+    /// key, and a URI which said nothing the header does not is not one to
+    /// create.
+    #[actix_web::test]
+    async fn an_auth_key_cannot_be_revoked_by_uri() {
+        let username = "auth-key-not-by-uri-username";
+        let password = "auth-key-not-by-uri-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
+
+        let revoke_request = test::TestRequest::delete()
+            .uri(&format!("/auth_keys/{auth_key}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let revoke_response = test::call_service(&app, revoke_request).await;
         assert_eq!(
-            whoami_response.status().as_u16(),
-            401,
-            "WhoAmI did not return client error."
+            revoke_response.status().as_u16(),
+            404,
+            "There is no auth key item URI, so this names no resource."
+        );
+
+        // The key is untouched: a 404 removed nothing.
+        let whoami_request = test::TestRequest::get()
+            .uri("/whoami")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        assert_response_success(
+            test::call_service(&app, whoami_request).await,
+            "The refused URI revoked the auth key anyway.",
         );
     }
 
@@ -1745,7 +1939,8 @@ mod tests {
         let password = String::from("can-add-task-password");
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
+        let auth_key =
+            register_and_create_auth_key(&app, username.as_str(), password.as_str()).await;
 
         assert_response_success(
             add_task(&app, &auth_key, "test title", Some("test description")).await,
@@ -1759,7 +1954,8 @@ mod tests {
         let password = String::from("added-task-location-password");
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
+        let auth_key =
+            register_and_create_auth_key(&app, username.as_str(), password.as_str()).await;
 
         let add_task_response =
             add_task(&app, &auth_key, "test title", Some("test description")).await;
@@ -1824,7 +2020,8 @@ mod tests {
         let password = String::from("can-get-task-password");
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
+        let auth_key =
+            register_and_create_auth_key(&app, username.as_str(), password.as_str()).await;
 
         let task_id = create_task(&app, &auth_key, "test title", Some("test description")).await;
         let get_task_request = test::TestRequest::get()
@@ -1847,7 +2044,8 @@ mod tests {
         let non_owner_password = "cannot-get-different-users-task-non-owner-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_auth_key = register_and_login(&app, owner_username, owner_password).await;
+        let owner_auth_key =
+            register_and_create_auth_key(&app, owner_username, owner_password).await;
 
         let task_id = create_task(
             &app,
@@ -1858,7 +2056,7 @@ mod tests {
         .await;
 
         let non_owner_auth_key =
-            register_and_login(&app, non_owner_username, non_owner_password).await;
+            register_and_create_auth_key(&app, non_owner_username, non_owner_password).await;
 
         let get_task_request = test::TestRequest::get()
             .uri(&format!("/tasks/{task_id}"))
@@ -1877,7 +2075,7 @@ mod tests {
         let password = "cannot-get-nonexistent-task-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let get_task_request = test::TestRequest::get()
             .uri("/tasks/-1")
@@ -1904,7 +2102,7 @@ mod tests {
         let password = "unusable-task-path-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         for (method, uri) in [
             (Method::GET, "/tasks/"),
@@ -1934,7 +2132,7 @@ mod tests {
         let password = "cannot-update-nonexistent-task-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let update_request = test::TestRequest::patch()
             .uri("/tasks/-1")
@@ -1960,7 +2158,7 @@ mod tests {
         let password = "cannot-update-without-fields-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let task_id = create_task(&app, &auth_key, "test title", None).await;
 
@@ -1991,7 +2189,7 @@ mod tests {
     ) -> Task {
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let task_id = create_task(&app, &auth_key, "test title", Some("test description")).await;
 
@@ -2071,7 +2269,7 @@ mod tests {
         let password = "update-only-target-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let first_task_id = create_task(&app, &auth_key, "first task", None).await;
         let second_task_id = create_task(&app, &auth_key, "second task", None).await;
@@ -2120,7 +2318,7 @@ mod tests {
         let password = "can-get-tasks-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         assert_response_success(
             add_task(&app, &auth_key, "task 1", None).await,
@@ -2146,7 +2344,7 @@ mod tests {
         let password = "completed-filter-incomplete-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         assert_response_success(
             add_task(&app, &auth_key, "task 1", None).await,
@@ -2182,7 +2380,7 @@ mod tests {
         let password = "completed-filter-completed-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         assert_response_success(
             add_task(&app, &auth_key, "task 1", None).await,
@@ -2219,7 +2417,7 @@ mod tests {
         let password = "bad-completed-filter-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         for uri in ["/tasks?completed=maybe", "/tasks?completed="] {
             let request = test::TestRequest::get()
@@ -2254,8 +2452,8 @@ mod tests {
         let password = "shared-completed-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let grantee_key = register_and_login(&app, grantee_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let grantee_key = register_and_create_auth_key(&app, grantee_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
         assert_response_success(
@@ -2387,7 +2585,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
@@ -2420,7 +2618,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         let created = assert_response_success(
@@ -2469,7 +2667,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         let created = share_task(&app, &owner_key, task_id, grantee_username, "read").await;
@@ -2519,7 +2717,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         for _ in 0..2 {
@@ -2557,7 +2755,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         for permission in ["", "owner", "read-write", "READ"] {
@@ -2588,8 +2786,8 @@ mod tests {
         let password = "nonowner-share-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let non_owner_key = register_and_login(&app, non_owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let non_owner_key = register_and_create_auth_key(&app, non_owner_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "task", None).await;
 
@@ -2619,7 +2817,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "task", None).await;
 
         assert_response_success(
@@ -2655,7 +2853,7 @@ mod tests {
             "Unable to register grantee",
         );
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "task", None).await;
 
         // Never shared at all.
@@ -2696,7 +2894,7 @@ mod tests {
         let password = "unknown-target-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
         let task_id = create_task(&app, &owner_key, "task", None).await;
 
         assert_eq!(
@@ -2722,8 +2920,8 @@ mod tests {
         let password = "oracle-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let other_key = register_and_login(&app, other_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let other_key = register_and_create_auth_key(&app, other_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "task", None).await;
 
@@ -2805,8 +3003,8 @@ mod tests {
         let password = "rw-update-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let grantee_key = register_and_login(&app, grantee_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let grantee_key = register_and_create_auth_key(&app, grantee_username, password).await;
 
         let task_id = create_task(
             &app,
@@ -2855,8 +3053,8 @@ mod tests {
         let password = "ro-update-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let grantee_key = register_and_login(&app, grantee_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let grantee_key = register_and_create_auth_key(&app, grantee_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
@@ -2903,8 +3101,8 @@ mod tests {
         let password = "unrelated-update-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let stranger_key = register_and_login(&app, stranger_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let stranger_key = register_and_create_auth_key(&app, stranger_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "private task", None).await;
 
@@ -2946,8 +3144,8 @@ mod tests {
         let password = "rw-manage-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let grantee_key = register_and_login(&app, grantee_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let grantee_key = register_and_create_auth_key(&app, grantee_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
@@ -3013,7 +3211,7 @@ mod tests {
         let password = "unusable-share-path-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
         let task_id = create_task(&app, &auth_key, "task", None).await;
 
         for (method, uri) in [
@@ -3051,8 +3249,8 @@ mod tests {
         let password = "read-share-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let grantee_key = register_and_login(&app, grantee_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let grantee_key = register_and_create_auth_key(&app, grantee_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
@@ -3099,8 +3297,8 @@ mod tests {
         let password = "rw-share-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let grantee_key = register_and_login(&app, grantee_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let grantee_key = register_and_create_auth_key(&app, grantee_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
@@ -3134,8 +3332,8 @@ mod tests {
         let password = "no-share-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
-        let stranger_key = register_and_login(&app, stranger_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
+        let stranger_key = register_and_create_auth_key(&app, stranger_username, password).await;
 
         let task_id = create_task(&app, &owner_key, "private task", None).await;
 
@@ -3169,7 +3367,7 @@ mod tests {
         let password = "stale-share-password";
         let app = test::init_service(build_app!()).await;
 
-        let owner_key = register_and_login(&app, owner_username, password).await;
+        let owner_key = register_and_create_auth_key(&app, owner_username, password).await;
 
         let owned_task_id = create_task(&app, &owner_key, "owned task", None).await;
 
@@ -3206,7 +3404,7 @@ mod tests {
         let password = "user-by-id-existing-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         // Look up the user's id directly (usernames are the public handle;
         // task/share payloads carry the id).
@@ -3235,7 +3433,7 @@ mod tests {
         let password = "user-by-id-unknown-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let request = test::TestRequest::get()
             .uri("/user_by_id?id=-1")
@@ -3255,7 +3453,7 @@ mod tests {
         let password = "cannot-get-user-without-id-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         for uri in [
             "/user_by_id",
@@ -3278,7 +3476,7 @@ mod tests {
         let password = "json-media-type-password";
         let app = test::init_service(build_app!()).await;
 
-        let auth_key = register_and_login(&app, username, password).await;
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         // A success with a body.
         let add_task_response = assert_response_success(
@@ -3344,20 +3542,22 @@ mod tests {
             "An empty body has no representation to describe."
         );
 
-        let login_response =
-            assert_response_success(login(&app, username, password).await, "Could not login.");
-        let auth_key = extract_json_string(login_response, "auth_key");
+        let created = assert_response_success(
+            create_auth_key(&app, username, password).await,
+            "Could not create an auth key.",
+        );
+        let auth_key = extract_json_string(created, "auth_key");
 
-        let logout_request = test::TestRequest::delete()
-            .uri("/logout")
+        let revoke_request = test::TestRequest::delete()
+            .uri("/auth_keys")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
-        let logout_response = assert_response_success(
-            test::call_service(&app, logout_request).await,
-            "Unable to log out.",
+        let revoke_response = assert_response_success(
+            test::call_service(&app, revoke_request).await,
+            "Unable to revoke an auth key.",
         );
         assert!(
-            logout_response.headers().get(CONTENT_TYPE).is_none(),
+            revoke_response.headers().get(CONTENT_TYPE).is_none(),
             "An empty body has no representation to describe."
         );
     }
