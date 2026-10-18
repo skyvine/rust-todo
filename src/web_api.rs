@@ -929,26 +929,15 @@ pub async fn share_task(
 
 // PATCH endpoints
 
-/// The fields a client may change on an existing task.
-///
-/// `Default` + `PartialEq` let us check for "no changes requested" without
-/// enumerating fields: adding a new optional field here automatically
-/// extends that check.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-struct TaskUpdates {
-    completed: Option<bool>,
-    title: Option<String>,
-    description: Option<String>,
-}
-
 /// The body of a `PATCH` on a task: only the fields to change.
 ///
 /// The task the fields belong to is named by the URI, so the body carries no
 /// identifier of its own.
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, PartialEq, Serialize)]
 struct UpdateTaskPayload {
-    #[serde(flatten)]
-    updates: TaskUpdates,
+    completed: Option<bool>,
+    title: Option<String>,
+    description: Option<String>,
 }
 
 /// Changes one or more of the task's fields.
@@ -959,15 +948,16 @@ struct UpdateTaskPayload {
 pub async fn update_task_by_id(
     auth_key: AuthKey,
     path: actix_web::web::Path<TaskPath>,
-    mut payload: actix_web::web::Json<UpdateTaskPayload>,
+    payload: actix_web::web::Json<UpdateTaskPayload>,
 ) -> impl Responder {
     let task_id = path.into_inner().id;
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Update Task", %request_id).entered();
+    let mut payload = payload.into_inner();
 
     // Reject no-op updates without enumerating individual fields: if no
     // optional field is set, this equals the default (all None).
-    if payload.updates == TaskUpdates::default() {
+    if payload == UpdateTaskPayload::default() {
         event!(Level::ERROR, "No fields provided to update");
         return HttpResponse::BadRequest().json(error_body_with_message(
             request_id,
@@ -975,7 +965,7 @@ pub async fn update_task_by_id(
         ));
     }
 
-    let title = if let Some(title) = payload.updates.title.as_mut() {
+    let title = if let Some(title) = payload.title.as_mut() {
         match TaskTitle::new(std::mem::take(title)) {
             Ok(title) => Some(title),
             Err(e) => {
@@ -988,7 +978,6 @@ pub async fn update_task_by_id(
     };
 
     let description = payload
-        .updates
         .description
         .as_mut()
         .map(|d| TaskDescription::new(std::mem::take(d)));
@@ -1003,7 +992,7 @@ pub async fn update_task_by_id(
             match crate::core::update_task(
                 &caller,
                 &task_id,
-                payload.updates.completed,
+                payload.completed,
                 title,
                 description,
                 &mut connection,
@@ -1871,11 +1860,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri("/tasks/-1")
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(true),
-                    title: None,
-                    description: None,
-                },
+                completed: Some(true),
+                title: None,
+                description: None,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
@@ -1900,9 +1887,7 @@ mod tests {
 
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{task_id}"))
-            .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates::default(),
-            })
+            .set_json(super::UpdateTaskPayload::default())
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let update_response = test::call_service(&app, update_request).await;
@@ -1934,11 +1919,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed,
-                    title,
-                    description,
-                },
+                completed,
+                title,
+                description,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
@@ -2017,11 +2000,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{first_task_id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(true),
-                    title: None,
-                    description: None,
-                },
+                completed: Some(true),
+                title: None,
+                description: None,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {}", auth_key.clone())))
             .to_request();
@@ -2100,11 +2081,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{second_task_id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(true),
-                    title: None,
-                    description: None,
-                },
+                completed: Some(true),
+                title: None,
+                description: None,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {}", auth_key.clone())))
             .to_request();
@@ -2200,11 +2179,9 @@ mod tests {
         let request = test::TestRequest::patch()
             .uri(&format!("/tasks/{id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(completed),
-                    title: None,
-                    description: None,
-                },
+                completed: Some(completed),
+                title: None,
+                description: None,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
@@ -2466,11 +2443,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(true),
-                    title: Some(String::from("updated by grantee")),
-                    description: Some(String::from("updated description")),
-                },
+                completed: Some(true),
+                title: Some(String::from("updated by grantee")),
+                description: Some(String::from("updated description")),
             })
             .insert_header((AUTHORIZATION, format!("Bearer {}", grantee_key.clone())))
             .to_request();
@@ -2512,11 +2487,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(true),
-                    title: None,
-                    description: None,
-                },
+                completed: Some(true),
+                title: None,
+                description: None,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
             .to_request();
@@ -2557,11 +2530,9 @@ mod tests {
         let update_request = test::TestRequest::patch()
             .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                updates: super::TaskUpdates {
-                    completed: Some(true),
-                    title: None,
-                    description: None,
-                },
+                completed: Some(true),
+                title: None,
+                description: None,
             })
             .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
             .to_request();
