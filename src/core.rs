@@ -445,27 +445,67 @@ pub fn establish_connection() -> Result<PgConnection, ConnectionError> {
     connection
 }
 
+/// A newly created auth key: the row's own id, and the key value.
+///
+/// The two travel together because a caller needs both and neither is
+/// derivable from the other. The id identifies the row without being a
+/// credential, so it is what goes in the new key's URI; the key authenticates
+/// without identifying anything, so it goes in the response body and in the
+/// `Authorization` header afterwards. A function returning only the key would
+/// leave the caller to put a bearer token in a URL, where every proxy and log
+/// that records a request line would record it.
+///
+/// Zeroized on drop because it holds the secret half.
+#[derive(ZeroizeOnDrop)]
+pub struct AuthKeyCreation {
+    id: i32,
+    key: String,
+}
+
+impl AuthKeyCreation {
+    /// The new key's id, which names its URI.
+    pub fn id(&self) -> i32 {
+        self.id
+    }
+
+    /// The new key itself, which is the credential.
+    pub fn key(&self) -> &String {
+        &self.key
+    }
+}
+
+/// Verify `given_password` against the account's hash and, if it matches, mint
+/// a new auth key for it.
+///
+/// Both halves of the created key are returned, because both are needed to
+/// report it: see [`AuthKeyCreation`].
 pub fn get_new_auth_key(
     user: &User,
     given_password: &CleartextPassword,
     hashed_password: &argon2::PasswordHash,
     connection: &mut PgConnection,
-) -> Result<Uuid, ApplicationError> {
-    use crate::schema::auth_keys::dsl::*;
+) -> Result<AuthKeyCreation, ApplicationError> {
+    use crate::schema::auth_keys::dsl::{self, *};
 
     match Argon2::default().verify_password(given_password.as_ref().as_bytes(), hashed_password) {
         Ok(_) => {
-            let new_key = Uuid::new_v4();
+            let new_key = format!("{}", Uuid::new_v4());
             let query = diesel::insert_into(auth_keys)
-                .values((user_id.eq(user.ref_id()), key.eq(format!("{new_key}"))));
+                .values((user_id.eq(user.ref_id()), key.eq(&new_key)))
+                // The id is assigned by the sequence, so the database is the
+                // only thing which knows it.
+                .returning(dsl::id);
             event!(
                 Level::TRACE,
                 "Running query: {}",
                 diesel::debug_query::<diesel::pg::Pg, _>(&query)
             );
 
-            match query.execute(connection) {
-                Ok(_) => Ok(new_key),
+            match query.get_result::<i32>(connection) {
+                Ok(new_key_id) => Ok(AuthKeyCreation {
+                    id: new_key_id,
+                    key: new_key,
+                }),
                 Err(e) => {
                     event!(Level::ERROR, "Unable to insert new auth key: {e}");
                     Err(ApplicationError::DieselError(e))

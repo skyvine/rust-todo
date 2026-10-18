@@ -196,9 +196,12 @@ with the Bearer challenge instead.
   - Output keys:
     - auth\_key [string]: The auth key, which the client sends as
       `Authorization: Bearer <auth_key>` on every endpoint which needs one.
-  - Statuses: `201 Created`, with a `Location: /auth_keys/{key}` header naming the URI of the
+  - Statuses: `201 Created`, with a `Location: /auth_keys/{id}` header naming the URI of the
     key just created and the key itself as its representation, so a client never has to ask a
-    second question to learn what it was handed. Every 401 answer carries a
+    second question to learn what it was handed. The `Location` carries the id of the key row
+    and never the key value: an auth key is a bearer token, and RFC 6750 §5.3 keeps those out
+    of URLs, because every proxy and log which records a request line would record the
+    credential. Every 401 answer carries a
     `WWW-Authenticate: Basic realm="todo", charset="UTF-8"` challenge, as RFC 9110 requires,
     whether the header was missing or malformed or the credentials were refused; no other
     endpoint answers with this challenge, because they take an auth key and so name the Bearer
@@ -216,11 +219,10 @@ with the Bearer challenge instead.
     exactly as the removal which got it there was. A key which has been revoked answers `401`
     with the bearer challenge on every endpoint which takes one.
 
-There is no `DELETE /auth_keys/{key}`, and no `GET` on a key either. The API never hands out a
-key other than the one the caller presented, so a URI naming a key could only ever name that
-same one: the `Location` above identifies the key a client was given, and removing it is done
-by presenting it. A revoked key stops working at once rather than at some later expiry, and
-nothing refreshes or rotates it.
+There is no `GET` on an auth key and no `DELETE /auth_keys/{id}`, so nothing is served at the
+URI the `Location` above names. Revoking a key is done by presenting it in the header, which is
+why `DELETE /auth_keys` needs no URI segment at all. A revoked key stops working at once rather
+than at some later expiry, and nothing refreshes or rotates it.
 
 ### DELETE
 

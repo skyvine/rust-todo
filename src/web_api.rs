@@ -434,13 +434,14 @@ fn share_uri(task_id: i32, username: &str) -> String {
 
 /// The URI of one auth key: the one URI which identifies it.
 ///
-/// A created key answers with this in a `Location`, so a client holds the URI
-/// of what it was given as well as the key itself. Nothing is served at it —
-/// the API never hands out a key other than the one the caller presented — so
-/// it identifies the key rather than offering it for reading or removal by
-/// name.
-fn auth_key_uri(key: &str) -> String {
-    format!("/auth_keys/{key}")
+/// The segment is the key row's own id, never the key value. An auth key is a
+/// bearer token, and RFC 6750 §5.3 keeps those out of URLs: every proxy and log
+/// which records a request line would record the credential, and no response
+/// header governs that. The id identifies the row without being secret, which
+/// is how every other resource here is addressed too — a task by its id, a share
+/// by its username.
+fn auth_key_uri(id: i32) -> String {
+    format!("/auth_keys/{id}")
 }
 
 /// A share in a response body: the id of the share itself, the username it is
@@ -470,8 +471,12 @@ fn share_body(share: &Share) -> serde_json::Value {
 /// exists: an unknown username is a refused authentication attempt, not a
 /// missing resource, so it answers 401 and never 404.
 ///
-/// The new key is the whole representation, in the body and in the `Location`,
-/// so a client never has to ask a second question to learn what it was given.
+/// The two halves of the answer are deliberately different things. The `Location`
+/// names the new key by its id, so the URI identifies it without being a
+/// credential; the body carries the key itself, which is the secret the client
+/// needs. A client therefore never has to ask a second question to learn what
+/// it was handed, and no request to this API ever puts a bearer token in a URI.
+///
 /// The API stays stateless: the key is presented in `Authorization: Bearer` on
 /// every later request, and this endpoint is the only one which takes
 /// credentials rather than a key.
@@ -529,14 +534,14 @@ pub async fn create_auth_key(credentials: Credentials) -> impl Responder {
             };
 
             match get_new_auth_key(&user, &pw, &hashed_password, &mut conn) {
-                Ok(auth_key) => {
-                    let auth_key = format!("{auth_key}");
-                    HttpResponse::Created()
-                        .insert_header((actix_web::http::header::LOCATION, auth_key_uri(&auth_key)))
-                        .json(
-                            json!({ "request_id": format!("{request_id}"), "auth_key": auth_key }),
-                        )
-                }
+                Ok(created) => HttpResponse::Created()
+                    .insert_header((
+                        actix_web::http::header::LOCATION,
+                        auth_key_uri(created.id()),
+                    ))
+                    .json(
+                        json!({ "request_id": format!("{request_id}"), "auth_key": created.key() }),
+                    ),
                 Err(e) => e.into_basic_http_response(&format!("{request_id}")),
             }
         }
@@ -1757,8 +1762,10 @@ mod tests {
     }
 
     /// An auth key is created at a URI of its own, so the creation has to say
-    /// which one: the `Location` names the key the client was just given, and
-    /// the body carries that same key as the created representation.
+    /// which one. The `Location` names it by the id of its row and the body
+    /// carries the key, because those are two different things: the id
+    /// identifies the key without being a credential, and the key authenticates
+    /// without identifying anything.
     #[actix_web::test]
     async fn a_created_auth_key_is_at_the_uri_it_reports() {
         let username = "auth-key-location-username";
@@ -1788,10 +1795,22 @@ mod tests {
             .expect("A Location is ASCII.")
             .to_string();
         let auth_key = extract_json_string(created, "auth_key");
+        let id = location
+            .rsplit('/')
+            .next()
+            .expect("A Location ends in the id of the key it names.");
         assert_eq!(
             location,
-            format!("/auth_keys/{auth_key}"),
+            format!("/auth_keys/{id}"),
             "The Location of a created auth key is the URI of that key."
+        );
+
+        // The key is a bearer token, and RFC 6750 §5.3 keeps those out of URLs:
+        // every proxy and log which records a request line would record the
+        // credential. The id names the key; it is not the key.
+        assert_ne!(
+            id, auth_key,
+            "The auth key itself is a credential and must not be in a URI."
         );
 
         // The key the client was handed is one the server accepts.

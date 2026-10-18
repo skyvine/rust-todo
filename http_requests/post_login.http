@@ -5,6 +5,8 @@ Authorization: Basic bWFudWFsLW5hbWU6bWFudWFsLXBhc3N3b3Jk
 
 # username: manual-name
 # password: manual-password
-# Answers 201 with a Location: /auth_keys/{key} header and the new key in the body.
-# Send it as Authorization: Bearer <auth_key> from then on, and DELETE /auth_keys
-# with that header to revoke it.
+# Answers 201 with a Location: /auth_keys/{id} header naming the new key's URI
+# by its id, and the key itself in the body. The id is never the key: an auth
+# key is a bearer token and stays out of URLs. Send the key as
+# Authorization: Bearer <auth_key> from then on, and DELETE /auth_keys with that
+# header to revoke it.
