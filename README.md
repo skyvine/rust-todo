@@ -47,12 +47,57 @@ whether authenticating again could ever help:
   a key that would be refused exactly the same way.
 
 A task you may not see and a task which does not exist are deliberately indistinguishable:
-both answer 403 with the same body shape, on `GET /task\_by\_id`, `PATCH /task\_by\_id`,
-`POST /share\_task`, `GET /task\_shares`, and `DELETE /unshare\_task`. Usernames and user ids
+both answer 403 with the same body shape, on `GET /tasks/{id}`, `PATCH /tasks/{id}`,
+`POST /share_task`, `GET /task\_shares`, and `DELETE /unshare\_task`. Usernames and user ids
 are public, so a real lookup miss there is still a 404: an unknown target username in
 `/share\_task` or `/unshare\_task`, and an unknown id in `/user\_by\_id`. A login naming a
 username no account has is not one of these misses: it is a refused authentication attempt,
 and is answered as one.
+
+### Tasks
+
+A task is one resource at one URI, `/tasks/{id}`, and the id is part of the path rather
+than a query parameter or a body field, so every operation on a task addresses it the
+same way. Requests and responses are JSON. The task representation is an object that can
+be deserialized by `Task::from_json_object`, holding `id`, `owner`, `title`,
+`description`, and `completed`.
+
+Tasks cannot be deleted. There is no `DELETE /tasks/{id}`: a task is created, read, and
+changed, and nothing removes it.
+
+- `POST /tasks`: Creates a task.
+  - Input keys:
+    - auth\_key [string]: An auth key as returned by the login endpoint.
+    - title [string]: The title of the new task (should be short)
+    - description \[string] (optional): A description of the task (could be long)
+  - Output keys:
+    - task [object]: The created task.
+  - Statuses: `201 Created`, with a `Location: /tasks/{id}` header naming the URI the new
+    task can be read and changed at; `400` if the title is unusable; `401` if the auth key
+    is missing, malformed, unknown, or expired.
+- `GET /tasks/{id}`: Retrieve the contents of the task the URI names. Shared access
+  (read or read-write) is honored.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by the login endpoint.
+  - Path parameters:
+    - id [number]: The id of the task, e.g. `GET /tasks/1`.
+  - Output keys:
+    - task [object]: The task with the given id.
+  - Statuses: `200 OK`; `404` if the path names no task at all, which includes a missing
+    or non-numeric id segment; `403` if the task is not the caller's and not shared with
+    them, and for a task which does not exist; `401` if the auth key is missing, malformed,
+    unknown, or expired.
+- `PATCH /tasks/{id}`: Changes some or all of the data contained in a task. Read-write
+  shared access is honored: a user with a `read\_write` share may update the task.
+  - Input keys:
+    - auth\_key [string]: An auth key as returned by the login endpoint.
+    - completed \[bool] (optional): The new completed status of the task.
+    - title \[string] (optional): The new title of the task.
+    - description \[string] (optional): The new description of the task.
+  - Path parameters:
+    - id [number]: The id of the task to change, e.g. `PATCH /tasks/1`.
+  - Statuses: `200 OK`; `400` if no field at all is provided to change, or if the new
+    title is unusable; `403` and `401` as for `GET /tasks/{id}`.
 
 ### DELETE
 
@@ -78,13 +123,6 @@ and is answered as one.
   - Output keys:
     - tasks [array]: Incomplete tasks owned by the caller plus tasks shared with them.
 - /is\_alive: unconditionally returns an Ok status
-- /task\_by\_id: Retrieve the contents of a task based on its ID. Shared access (read or read-write) is honored.
-  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by the login endpoint.
-  - Query parameters:
-    - id [number]: The id of the task to retrieve, e.g. `GET /task\_by\_id?id=1`.
-  - Output keys:
-    - task [object]: An object that can be deserialized by `Task::from\_json\_object`.
 - /task\_shares: List the shares on a task owned by the caller
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
     where it is an auth key as returned by the login endpoint.
@@ -123,28 +161,19 @@ and is answered as one.
     malformed header rather than a refused credential.
   - Output keys:
     - auth\_key [string]: The auth\_key which can be used for requests that require authentication
-- /add\_task: Creates a new task
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - title [string]: The title of the new task (should be short)
-    - description \[string] (optional): A description of the task (could be long)
-  - Output keys:
-    - id [number]: A unique identifier for the task.
 - /share\_task: Grants another user access to a task owned by the caller, or replaces the permission on an existing share
   - Input keys:
     - auth\_key [string]: An auth key as returned by the login endpoint.
     - id [number]: The id of the task to share.
     - username [string]: The username of the user to share with.
     - permission [string]: Either "read" or "read\_write".
+
+The task endpoints are documented together, under [Tasks](#tasks); `POST /tasks`,
+`GET /tasks/{id}`, and `PATCH /tasks/{id}` are the same resource at one URI.
+
 ### PATCH
 
-- /task\_by\_id: Changes some or all of the data contained in a task. Read-write shared access is honored: a user with a `read\_write` share may update the task.
-  - Input keys:
-    - auth\_key [string]: An auth key as returned by the login endpoint.
-    - id [number]: The id of the task to change.
-    - completed \[bool] (optional): The new completed status of the task.
-    - title \[string] (optional): The new title of the task.
-    - description \[string] (optional): The new description of the task.
+There is no `PATCH` endpoint outside the task resource, which is documented above.
 
 ## Directory Map
 - .github/workflows/\*:

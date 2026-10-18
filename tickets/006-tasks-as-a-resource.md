@@ -61,31 +61,44 @@ addressing the resource.
 
 ## Acceptance criteria
 
-- [ ] `POST /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` exist and the old
+- [X] `POST /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` exist and the old
       `/add_task` and `/task_by_id` routes are gone.
-- [ ] No task identifier is read from a query string or request body any more.
-- [ ] `POST /tasks` returns `201` with `Location: /tasks/{id}`; a `GET` on that
+- [X] No task identifier is read from a query string or request body any more.
+- [X] `POST /tasks` returns `201` with `Location: /tasks/{id}`; a `GET` on that
       `Location` returns the task.
-- [ ] A non-numeric or missing id in the path returns `404`, not `400`.
-- [ ] `PATCH /tasks/{id}` with an empty body is still `400` ("at least one
+- [X] A non-numeric or missing id in the path returns `404`, not `400`.
+- [X] `PATCH /tasks/{id}` with an empty body is still `400` ("at least one
       field must be provided").
-- [ ] Tests updated for the new URIs: `can_add_task`,
+- [X] Tests updated for the new URIs: `can_add_task`,
       `cannot_add_task_without_valid_auth_key`, `can_get_task`,
       `cannot_get_different_users_task`, `cannot_get_nonexistent_task`,
-      `cannot_get_task_without_a_valid_id_query_parameter` (repurpose or
-      delete — there is no query string to reject), `cannot_update_nonexistent_task`,
+      `cannot_get_task_without_a_valid_id_query_parameter` (repurposed as
+      `a_path_which_cannot_name_a_task_is_not_found`, which asserts the 404s),
+      `cannot_update_nonexistent_task`,
       `title_is_updatable`, `description_is_updatable`, `completed_is_updatable`,
       `update_modifies_only_the_target_task`, the `update_task` helper,
       `read_write_sharee_can_update_task_fields`,
       `read_only_sharee_cannot_update_task`, `unrelated_user_cannot_update_task`,
       `read_share_grants_get_and_listing_access`, `no_share_means_401_and_no_listing_entry`.
-- [ ] `README.md` has one task section instead of the `add_task`/`task_by_id`
+- [X] `README.md` has one task section instead of the `add_task`/`task_by_id`
       split, documenting the media type, statuses, and path parameter.
-- [ ] `http_requests/` updated: `patch_task_by_id.http` replaced, an add-task
-      request added.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [X] `http_requests/` updated: `patch_task_by_id.http` replaced by
+      `patch_task.http`, and `post_task.http` added.
+- [X] `cargo clippy` passes with no new warnings.
+- [X] `cargo test` passes.
+- [X] `cargo fmt --check` passes.
+
+## What landed here
+
+Ticket 011 has not landed, so this ticket takes the `Location` header and the
+created task's representation with it. The bare `task_id` key went with them: a
+representation which already carries the id leaves nothing for it to say, and
+011's removal of that key would otherwise repeat this change.
+
+Two tests are new rather than updated: `added_task_is_at_the_uri_it_reports`,
+which covers `POST` → `Location` → `GET`, and
+`cannot_update_a_task_without_any_fields`, which pins the empty-body `400` that
+used to be covered only by the id-in-body shape.
 
 ## Notes
 

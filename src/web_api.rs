@@ -397,6 +397,17 @@ pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> Error {
         .into()
 }
 
+/// The path parameter every task URI carries: the id of the task it names.
+///
+/// The id lives in the URI rather than in a query string or a body field, so
+/// the path is what identifies the task. A segment which cannot be an id names
+/// no task at all, and the router answers that with a 404 rather than an
+/// extractor answering 400 for a request which named nothing.
+#[derive(Deserialize)]
+struct TaskPath {
+    id: i32,
+}
+
 // DELETE endpoints
 
 #[delete("/logout")]
@@ -477,21 +488,16 @@ pub async fn get_incomplete_tasks(auth_key: AuthKey) -> impl Responder {
     }
 }
 
-/// The query `GET /task_by_id` reads the task id from.
-#[derive(Deserialize)]
-struct TaskByIdQuery {
-    id: i32,
-}
-
-/// Returns a specific task based on the ID of the given task.
+/// Returns the task named by the URI.
 ///
 /// The user must be logged in as the task's owner or have a share on
 /// the task in order to get the task.
-#[get("/task_by_id")]
+#[get("/tasks/{id}")]
 pub async fn get_task_by_id(
     auth_key: AuthKey,
-    query: actix_web::web::Query<TaskByIdQuery>,
+    path: actix_web::web::Path<TaskPath>,
 ) -> impl Responder {
+    let task_id = path.into_inner().id;
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Task by ID", %request_id).entered();
 
@@ -505,9 +511,9 @@ pub async fn get_task_by_id(
 
             // Owner, read-only, and read-write share holders may all view
             // the task; anyone else gets the same 403.
-            match get_task_permission(&user, &query.id, &mut connection) {
+            match get_task_permission(&user, &task_id, &mut connection) {
                 Ok(Permission::Owner) | Ok(Permission::ReadOnly) | Ok(Permission::ReadWrite) => {
-                    match crate::core::get_task_by_id(&query.id, &mut connection) {
+                    match crate::core::get_task_by_id(&task_id, &mut connection) {
                         Ok(task) => HttpResponse::Ok()
                             .json(json!({"request_id": format!("{request_id}"), "task": task})),
                         Err(e) => e.into_http_response(&format!("{request_id}")),
@@ -517,7 +523,7 @@ pub async fn get_task_by_id(
                     event!(
                         Level::ERROR,
                         "Cannot get task {}: user {} has no task access",
-                        query.id,
+                        task_id,
                         user.ref_id()
                     );
                     ApplicationError::Forbidden.into_http_response(&format!("{request_id}"))
@@ -527,7 +533,7 @@ pub async fn get_task_by_id(
                     // task": both are the same 403 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
-                        event!(Level::ERROR, "Cannot get task {}: not found", query.id);
+                        event!(Level::ERROR, "Cannot get task {}: not found", task_id);
                         ApplicationError::Forbidden.into_http_response(&format!("{request_id}"))
                     }
                     other => other.into_http_response(&format!("{request_id}")),
@@ -672,10 +678,11 @@ struct AddTaskPayload {
     description: Option<String>,
 }
 
-/// Creates a new task.
+/// Creates a task in the collection and answers with its representation.
 ///
-/// "Completed" defaults to "false"
-#[post("/add_task")]
+/// "Completed" defaults to "false". The `Location` header names the URI of the
+/// new task, which is where it can be read and changed from then on.
+#[post("/tasks")]
 pub async fn add_task(
     auth_key: AuthKey,
     mut payload: actix_web::web::Json<AddTaskPayload>,
@@ -702,7 +709,11 @@ pub async fn add_task(
 
             match crate::core::add_task(&owner, &title, false, description, &mut connection) {
                 Ok(task) => HttpResponse::Created()
-                    .json(json!({"request_id": format!("{request_id}"), "task_id": task.id()})),
+                    .insert_header((
+                        actix_web::http::header::LOCATION,
+                        format!("/tasks/{}", task.id()),
+                    ))
+                    .json(json!({"request_id": format!("{request_id}"), "task": task})),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -930,9 +941,12 @@ struct TaskUpdates {
     description: Option<String>,
 }
 
+/// The body of a `PATCH` on a task: only the fields to change.
+///
+/// The task the fields belong to is named by the URI, so the body carries no
+/// identifier of its own.
 #[derive(Deserialize, Serialize)]
 struct UpdateTaskPayload {
-    id: i32,
     #[serde(flatten)]
     updates: TaskUpdates,
 }
@@ -941,11 +955,13 @@ struct UpdateTaskPayload {
 ///
 /// It is an error for all of the optional values to be None; at least on field must be updated for
 /// this endpoint to succeed.
-#[patch("/task_by_id")]
+#[patch("/tasks/{id}")]
 pub async fn update_task_by_id(
     auth_key: AuthKey,
+    path: actix_web::web::Path<TaskPath>,
     mut payload: actix_web::web::Json<UpdateTaskPayload>,
 ) -> impl Responder {
+    let task_id = path.into_inner().id;
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Update Task", %request_id).entered();
 
@@ -986,7 +1002,7 @@ pub async fn update_task_by_id(
 
             match crate::core::update_task(
                 &caller,
-                &payload.id,
+                &task_id,
                 payload.updates.completed,
                 title,
                 description,
@@ -998,7 +1014,7 @@ pub async fn update_task_by_id(
                     // task": both are the same 403 to avoid leaking which
                     // task IDs exist.
                     ApplicationError::DieselError(diesel::result::Error::NotFound) => {
-                        event!(Level::ERROR, "Cannot update task {}: not found", payload.id);
+                        event!(Level::ERROR, "Cannot update task {}: not found", task_id);
                         ApplicationError::Forbidden.into_http_response(&format!("{request_id}"))
                     }
                     other => other.into_http_response(&format!("{request_id}")),
@@ -1066,7 +1082,8 @@ pub async fn unshare_task(
 mod tests {
     use crate::{build_app, core::Task};
     use actix_http::Request;
-    use actix_web::http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
+    use actix_web::http::Method;
+    use actix_web::http::header::{AUTHORIZATION, CONTENT_TYPE, LOCATION, WWW_AUTHENTICATE};
     use actix_web::{App, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
@@ -1250,7 +1267,7 @@ mod tests {
         description: Option<&str>,
     ) -> ServiceResponse {
         let request = test::TestRequest::post()
-            .uri("/add_task")
+            .uri("/tasks")
             .set_json(super::AddTaskPayload {
                 title: String::from(title),
                 description: description.map(String::from),
@@ -1258,6 +1275,23 @@ mod tests {
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         test::call_service(app, request).await
+    }
+
+    /// Creates a task and returns its id, which the created representation and
+    /// the `Location` header both name.
+    async fn create_task(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        auth_key: &str,
+        title: &str,
+        description: Option<&str>,
+    ) -> i32 {
+        let response = assert_response_success(
+            add_task(app, auth_key, title, description).await,
+            "Unable to add task.",
+        );
+        extract_json_from_constructor(response, "task", Task::from_json_object)
+            .map(|task| *task.id())
+            .expect("The created task should be in the response body.")
     }
 
     fn extract_json_from_constructor<Constructor, Output>(
@@ -1298,13 +1332,6 @@ mod tests {
                 })
                 .collect(),
             None => panic!("{} is not an array!", v),
-        })
-    }
-
-    fn extract_json_i32(response: ServiceResponse, key: &str) -> i32 {
-        extract_json_from_constructor(response, key, |v| match v.as_i64() {
-            Some(i) => i as i32,
-            None => panic!("{} is not a number! {:?}", key, v),
         })
     }
 
@@ -1576,15 +1603,11 @@ mod tests {
         let app = test::init_service(build_app!()).await;
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "private task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "private task", None).await;
 
         let stranger_key = register_and_login(&app, stranger_username, password).await;
         let request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
             .to_request();
         let response = test::call_service(&app, request).await;
@@ -1665,6 +1688,48 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn added_task_is_at_the_uri_it_reports() {
+        let username = String::from("added-task-location-username");
+        let password = String::from("added-task-location-password");
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
+
+        let add_task_response =
+            add_task(&app, &auth_key, "test title", Some("test description")).await;
+        let created = assert_response_success(add_task_response, "Unable to add task.");
+
+        // The creation names the URI of what it created, so the client does not
+        // have to build one out of an id it found somewhere else.
+        let location = created
+            .headers()
+            .get(LOCATION)
+            .expect("A 201 must name the resource it created.")
+            .to_str()
+            .expect("A Location is ASCII.")
+            .to_string();
+
+        // The created representation and the URI it named agree on the id, and
+        // that URI returns the task.
+        let created_task = extract_json_from_constructor(created, "task", Task::from_json_object)
+            .expect("The 201 must carry the created task.");
+        assert_eq!(location, format!("/tasks/{}", created_task.id()));
+
+        let get_task_request = test::TestRequest::get()
+            .uri(&location)
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let get_task_response = assert_response_success(
+            test::call_service(&app, get_task_request).await,
+            "The Location of a created task should return it.",
+        );
+        let task = extract_json_from_constructor(get_task_response, "task", Task::from_json_object)
+            .unwrap();
+        assert_eq!(*task.id(), *created_task.id());
+        assert_eq!(*task.title(), "test title");
+    }
+
+    #[actix_web::test]
     async fn cannot_add_task_without_valid_auth_key() {
         let app = test::init_service(build_app!()).await;
         let response = add_task(
@@ -1695,14 +1760,9 @@ mod tests {
 
         let auth_key = register_and_login(&app, username.as_str(), password.as_str()).await;
 
-        let add_task_response = assert_response_success(
-            add_task(&app, &auth_key, "test title", Some("test description")).await,
-            "Unable to add task.",
-        );
-
-        let task_id = extract_json_i32(add_task_response, "task_id");
+        let task_id = create_task(&app, &auth_key, "test title", Some("test description")).await;
         let get_task_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let get_task_response = assert_response_success(
@@ -1723,23 +1783,19 @@ mod tests {
 
         let owner_auth_key = register_and_login(&app, owner_username, owner_password).await;
 
-        let add_task_response = assert_response_success(
-            add_task(
-                &app,
-                &owner_auth_key,
-                "test title",
-                Some("test description"),
-            )
-            .await,
-            "Unable to add task.",
-        );
-        let task_id = extract_json_i32(add_task_response, "task_id");
+        let task_id = create_task(
+            &app,
+            &owner_auth_key,
+            "test title",
+            Some("test description"),
+        )
+        .await;
 
         let non_owner_auth_key =
             register_and_login(&app, non_owner_username, non_owner_password).await;
 
         let get_task_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {non_owner_auth_key}")))
             .to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
@@ -1758,7 +1814,7 @@ mod tests {
         let auth_key = register_and_login(&app, username, password).await;
 
         let get_task_request = test::TestRequest::get()
-            .uri("/task_by_id?id=-1")
+            .uri("/tasks/-1")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let get_task_response = test::call_service(&app, get_task_request).await;
@@ -1770,30 +1826,37 @@ mod tests {
         );
     }
 
+    /// A task is named by its URI, so a path which cannot name one is a missing
+    /// resource rather than a malformed request: the router answers 404, where
+    /// the old query string asked a 400 of a request which named nothing.
     #[actix_web::test]
-    async fn cannot_get_task_without_a_valid_id_query_parameter() {
-        let username = "cannot-get-task-without-id-username";
-        let password = "cannot-get-task-without-id-password";
+    async fn a_path_which_cannot_name_a_task_is_not_found() {
+        let username = "unusable-task-path-username";
+        let password = "unusable-task-path-password";
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        for uri in [
-            "/task_by_id",
-            "/task_by_id?id=",
-            "/task_by_id?id=not-a-number",
+        for (method, uri) in [
+            (Method::GET, "/tasks"),
+            (Method::GET, "/tasks/"),
+            (Method::GET, "/tasks/not-a-number"),
+            (Method::GET, "/tasks/1/"),
+            (Method::PATCH, "/tasks"),
+            (Method::PATCH, "/tasks/"),
+            (Method::PATCH, "/tasks/not-a-number"),
         ] {
-            let get_task_request = test::TestRequest::get()
+            let request = test::TestRequest::default()
+                .method(method)
                 .uri(uri)
                 .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
                 .to_request();
-            let get_task_response = test::call_service(&app, get_task_request).await;
+            let response = test::call_service(&app, request).await;
             assert_eq!(
-                get_task_response.status().as_u16(),
-                400,
-                "{uri} should be a 400."
+                response.status().as_u16(),
+                404,
+                "{uri} names no task, so it should be a 404."
             );
-            assert_json_error_with_request_id(get_task_response);
         }
     }
 
@@ -1806,9 +1869,8 @@ mod tests {
         let auth_key = register_and_login(&app, username, password).await;
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri("/tasks/-1")
             .set_json(super::UpdateTaskPayload {
-                id: -1,
                 updates: super::TaskUpdates {
                     completed: Some(true),
                     title: None,
@@ -1824,6 +1886,37 @@ mod tests {
         );
     }
 
+    /// An empty body changes nothing, so it is a client error rather than a
+    /// request which is quietly accepted and ignored.
+    #[actix_web::test]
+    async fn cannot_update_a_task_without_any_fields() {
+        let username = "cannot-update-without-fields-username";
+        let password = "cannot-update-without-fields-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_login(&app, username, password).await;
+
+        let task_id = create_task(&app, &auth_key, "test title", None).await;
+
+        let update_request = test::TestRequest::patch()
+            .uri(&format!("/tasks/{task_id}"))
+            .set_json(super::UpdateTaskPayload {
+                updates: super::TaskUpdates::default(),
+            })
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let update_response = test::call_service(&app, update_request).await;
+        assert_eq!(
+            update_response.status().as_u16(),
+            400,
+            "A PATCH with no fields to change should be a 400."
+        );
+        assert_eq!(
+            extract_json_string(update_response, "message"),
+            "At least one field must be provided"
+        );
+    }
+
     // TODO: Return the updated task so it can be verified
     async fn update_task(
         username: &str,
@@ -1836,16 +1929,11 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let add_task_response = assert_response_success(
-            add_task(&app, &auth_key, "test title", Some("test description")).await,
-            "Unable to add task.",
-        );
-        let task_id = extract_json_i32(add_task_response, "task_id");
+        let task_id = create_task(&app, &auth_key, "test title", Some("test description")).await;
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                id: task_id,
                 updates: super::TaskUpdates {
                     completed,
                     title,
@@ -1860,7 +1948,7 @@ mod tests {
         );
 
         let get_task_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let get_task_response = assert_response_success(
@@ -1923,22 +2011,12 @@ mod tests {
 
         let auth_key = register_and_login(&app, username, password).await;
 
-        let first_add_response = assert_response_success(
-            add_task(&app, &auth_key, "first task", None).await,
-            "Unable to add first task.",
-        );
-        let first_task_id = extract_json_i32(first_add_response, "task_id");
-
-        let second_add_response = assert_response_success(
-            add_task(&app, &auth_key, "second task", None).await,
-            "Unable to add second task.",
-        );
-        let second_task_id = extract_json_i32(second_add_response, "task_id");
+        let first_task_id = create_task(&app, &auth_key, "first task", None).await;
+        let second_task_id = create_task(&app, &auth_key, "second task", None).await;
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{first_task_id}"))
             .set_json(super::UpdateTaskPayload {
-                id: first_task_id,
                 updates: super::TaskUpdates {
                     completed: Some(true),
                     title: None,
@@ -1953,7 +2031,7 @@ mod tests {
         );
 
         let get_second = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={second_task_id}"))
+            .uri(&format!("/tasks/{second_task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let get_second_response = assert_response_success(
@@ -2017,16 +2095,11 @@ mod tests {
             "Unable to add first task.",
         );
 
-        let second_add_task_response = assert_response_success(
-            add_task(&app, &auth_key, "task 2", None).await,
-            "Unable to add second task.",
-        );
-        let second_task_id = extract_json_i32(second_add_task_response, "task_id");
+        let second_task_id = create_task(&app, &auth_key, "task 2", None).await;
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{second_task_id}"))
             .set_json(super::UpdateTaskPayload {
-                id: second_task_id,
                 updates: super::TaskUpdates {
                     completed: Some(true),
                     title: None,
@@ -2112,7 +2185,7 @@ mod tests {
         id: i32,
     ) -> ServiceResponse {
         let request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={id}"))
+            .uri(&format!("/tasks/{id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         test::call_service(app, request).await
@@ -2125,9 +2198,8 @@ mod tests {
         completed: bool,
     ) -> ServiceResponse {
         let request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{id}"))
             .set_json(super::UpdateTaskPayload {
-                id,
                 updates: super::TaskUpdates {
                     completed: Some(completed),
                     title: None,
@@ -2152,11 +2224,7 @@ mod tests {
         );
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "shared task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read").await,
@@ -2186,11 +2254,7 @@ mod tests {
         );
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "shared task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read").await,
@@ -2220,9 +2284,7 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let non_owner_key = register_and_login(&app, non_owner_username, password).await;
 
-        let add_response =
-            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "task", None).await;
 
         assert_forbidden(
             &share_task(&app, &non_owner_key, task_id, non_owner_username, "read").await,
@@ -2251,9 +2313,7 @@ mod tests {
         );
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response =
-            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read").await,
@@ -2279,9 +2339,7 @@ mod tests {
         let app = test::init_service(build_app!()).await;
 
         let owner_key = register_and_login(&app, owner_username, password).await;
-        let add_response =
-            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "task", None).await;
 
         assert_eq!(
             share_task(&app, &owner_key, task_id, "no-such-user", "read")
@@ -2309,9 +2367,7 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let other_key = register_and_login(&app, other_username, password).await;
 
-        let add_response =
-            assert_response_success(add_task(&app, &owner_key, "task", None).await, "add task");
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "task", None).await;
 
         // Non-owner trying to manage an existing task
         let not_owned = share_task(&app, &other_key, task_id, other_username, "read").await;
@@ -2394,17 +2450,13 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(
-                &app,
-                &owner_key,
-                "shared task",
-                Some("original description"),
-            )
-            .await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(
+            &app,
+            &owner_key,
+            "shared task",
+            Some("original description"),
+        )
+        .await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
@@ -2412,9 +2464,8 @@ mod tests {
         );
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                id: task_id,
                 updates: super::TaskUpdates {
                     completed: Some(true),
                     title: Some(String::from("updated by grantee")),
@@ -2429,7 +2480,7 @@ mod tests {
         );
 
         let get_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
             .to_request();
         let get_response =
@@ -2451,11 +2502,7 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "shared task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read").await,
@@ -2463,9 +2510,8 @@ mod tests {
         );
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                id: task_id,
                 updates: super::TaskUpdates {
                     completed: Some(true),
                     title: None,
@@ -2482,7 +2528,7 @@ mod tests {
 
         // The task itself must be unchanged.
         let get_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
             .to_request();
         let get_response =
@@ -2506,16 +2552,11 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let stranger_key = register_and_login(&app, stranger_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "private task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "private task", None).await;
 
         let update_request = test::TestRequest::patch()
-            .uri("/task_by_id")
+            .uri(&format!("/tasks/{task_id}"))
             .set_json(super::UpdateTaskPayload {
-                id: task_id,
                 updates: super::TaskUpdates {
                     completed: Some(true),
                     title: None,
@@ -2532,7 +2573,7 @@ mod tests {
 
         // The task itself must be unchanged.
         let get_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {owner_key}")))
             .to_request();
         let get_response =
@@ -2556,11 +2597,7 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "shared task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
@@ -2646,11 +2683,7 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "shared task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read").await,
@@ -2659,7 +2692,7 @@ mod tests {
 
         // The grantee can now fetch the task directly...
         let get_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
             .to_request();
         let get_response = assert_response_success(
@@ -2706,11 +2739,7 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let grantee_key = register_and_login(&app, grantee_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "shared task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "shared task", None).await;
 
         assert_response_success(
             share_task(&app, &owner_key, task_id, grantee_username, "read_write").await,
@@ -2718,7 +2747,7 @@ mod tests {
         );
 
         let get_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {grantee_key}")))
             .to_request();
         assert_response_success(
@@ -2749,14 +2778,10 @@ mod tests {
         let owner_key = register_and_login(&app, owner_username, password).await;
         let stranger_key = register_and_login(&app, stranger_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "private task", None).await,
-            "add task",
-        );
-        let task_id = extract_json_i32(add_response, "task_id");
+        let task_id = create_task(&app, &owner_key, "private task", None).await;
 
         let get_request = test::TestRequest::get()
-            .uri(&format!("/task_by_id?id={task_id}"))
+            .uri(&format!("/tasks/{task_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {stranger_key}")))
             .to_request();
         let get_response = test::call_service(&app, get_request).await;
@@ -2791,11 +2816,7 @@ mod tests {
 
         let owner_key = register_and_login(&app, owner_username, password).await;
 
-        let add_response = assert_response_success(
-            add_task(&app, &owner_key, "owned task", None).await,
-            "add task",
-        );
-        let owned_task_id = extract_json_i32(add_response, "task_id");
+        let owned_task_id = create_task(&app, &owner_key, "owned task", None).await;
 
         // Simulate a stale share row granting the owner access to their own
         // task by inserting it directly; the owner's listing must not
@@ -2915,24 +2936,24 @@ mod tests {
             add_task(&app, &auth_key, "test title", Some("test description")).await,
             "Unable to add task.",
         );
-        assert_json_content_type(&add_task_response, "/add_task said nothing about its body.");
+        assert_json_content_type(&add_task_response, "/tasks said nothing about its body.");
 
         // A 400 from the query string extractor.
         let request = test::TestRequest::get()
-            .uri("/task_by_id?id=not-a-number")
+            .uri("/task_shares?id=not-a-number")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             400,
-            "/task_by_id should be a 400."
+            "/task_shares with an unreadable query string should be a 400."
         );
         assert_json_content_type(&response, "The 400 said nothing about its body.");
 
         // A 400 from the JSON body extractor.
         let request = test::TestRequest::post()
-            .uri("/add_task")
+            .uri("/tasks")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .insert_header((CONTENT_TYPE, "application/json"))
             .set_payload("this is not JSON")
