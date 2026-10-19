@@ -1660,7 +1660,7 @@ mod tests {
             .to_request();
         let current_user_response = assert_response_success(
             test::call_service(&app, current_user_request).await,
-            "Whoami request failed.",
+            "/users/me request failed.",
         );
 
         let response_name = extract_json_username(current_user_response);
@@ -1883,7 +1883,7 @@ mod tests {
             .to_request();
         let current_user_response = assert_response_success(
             test::call_service(&app, current_user_request).await,
-            "Whoami request failed.",
+            "/users/me request failed.",
         );
         assert_eq!(extract_json_username(current_user_response), username);
     }
