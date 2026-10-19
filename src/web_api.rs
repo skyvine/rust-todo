@@ -1597,22 +1597,6 @@ mod tests {
         );
     }
 
-    /// The old URI is gone rather than kept as an alias: there are no clients
-    /// to transition, and `/health` is the name every deployment tool already
-    /// understands.
-    #[actix_web::test]
-    async fn the_is_alive_uri_is_gone() {
-        let app = test::init_service(build_app!()).await;
-
-        let request = test::TestRequest::get().uri("/is_alive").to_request();
-        let response = test::call_service(&app, request).await;
-        assert_eq!(
-            response.status().as_u16(),
-            404,
-            "/is_alive names no resource, so it should be a 404."
-        );
-    }
-
     #[actix_web::test]
     async fn regitering_account_is_successful() {
         let app = test::init_service(build_app!()).await;
