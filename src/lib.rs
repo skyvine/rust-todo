@@ -19,13 +19,15 @@ macro_rules! build_app {
             .service(crate::web_api::is_alive)
             .service(crate::web_api::create_auth_key)
             .service(crate::web_api::delete_auth_key)
-            .service(crate::web_api::register_account)
+            .service(crate::web_api::create_user)
             .service(crate::web_api::put_share)
             .service(crate::web_api::get_task_shares)
             .service(crate::web_api::delete_share)
             .service(crate::web_api::update_task_by_id)
-            .service(crate::web_api::get_user_by_id)
-            .service(crate::web_api::whoami)
+            // `/users/me` is registered before `/users/{id}`, because the router
+            // matches in registration order and `me` is not an id.
+            .service(crate::web_api::get_current_user)
+            .service(crate::web_api::get_user)
     };
 }
 

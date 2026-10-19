@@ -1,4 +1,7 @@
-GET /user_by_id?id=1 HTTP/1.1
+GET /users/1 HTTP/1.1
 Host: 127.0.0.1
 Connection: close
 Authorization: Bearer manual-auth-key
+
+# Answers 200 with the user the URI names: its id and its username. User ids
+# are public, so an id no account has is a 404.

@@ -51,7 +51,7 @@ both answer 403 with the same body shape, on every verb which acts on a task: `G
 `PATCH /tasks/{id}`, `GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
 `DELETE /tasks/{id}/shares/{username}`. Usernames and user ids are public, so a real lookup
 miss there is still a 404: an unknown target username in a `PUT` or `DELETE` on a share, and
-an unknown id in `/user\_by\_id`. `POST /auth_keys` naming a username no account has is not one
+an unknown id in `/users/{id}`. `POST /auth_keys` naming a username no account has is not one
 of these misses: it is a refused authentication attempt, and is answered as one.
 
 ### Tasks
@@ -175,6 +175,52 @@ its shares; a `read_write` grantee may edit the task itself but not share it onw
     account has; `403` if the task is not the caller's, and for a task which does not
     exist; `401` if the auth key is missing, malformed, unknown, or expired.
 
+### Users
+
+A user is an account, and it is a resource at one URI, `/users/{id}`, where the id is the
+one which appears in the `owner` field of a task and in the share payloads. User ids are
+public, so a user can be read by anyone who knows its id.
+
+The caller's own user is at `/users/me`, a URI which names the caller rather than a row.
+It is a special case of `/users/{id}` and is matched first, so `me` is never read as an
+id. The id is in the answer as well as the username, because it appears in every task
+and share payload, and a client which could not look its own id up would have to guess
+it.
+
+There is no listing of users. A client which has an id can read that user, and one which
+has only a username has nothing to look up, because the API never offered a lookup by
+name.
+
+- `POST /users`: Creates an account. The URI names the collection users are created in,
+  not an operation to perform on it.
+  - Input keys:
+    - username [string]: The username for the new account. Must not already exist.
+    - password [string]: The password for the new account.
+  - Output keys:
+    - user [object]: The created user, with its `id` [number] and its `username`
+      [string]. No response ever carries the password or its hash.
+  - Statuses: `201 Created`, with a `Location: /users/{id}` header naming the URI the
+    new user can be read at; `400` if the username is unusable; `409` if the username is
+    already taken.
+- `GET /users/me`: Retrieves the caller's own user: the resource relative to the caller.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by `POST /auth_keys`.
+  - Output keys:
+    - user [object]: The caller's user, with its `id` [number] and its `username`
+      [string].
+  - Statuses: `200 OK`; `401` if the auth key is missing, malformed, unknown, or expired.
+- `GET /users/{id}`: Retrieves the user the URI names.
+  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
+    where it is an auth key as returned by `POST /auth_keys`.
+  - Path parameters:
+    - id [number]: The id of the user to retrieve, e.g. `GET /users/1`.
+  - Output keys:
+    - user [object]: The user with the given id, with its `id` [number] and its
+      `username` [string].
+  - Statuses: `200 OK`; `404` if the path names no user at all, which includes a
+    missing or non-numeric id segment, and an id no account has, because user ids are
+    public; `401` if the auth key is missing, malformed, unknown, or expired.
+
 ### Auth keys
 
 An auth key is a secret the API issues to a caller and accepts back on every later request,
@@ -234,25 +280,15 @@ than at some later expiry, and nothing refreshes or rotates it.
 ### GET
 
 - /is\_alive: unconditionally returns an Ok status
-- /whoami: Retrieves the username of the currently logged in user
-  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by `POST /auth_keys`.
-  - Output keys:
-    - username [string]: The name of the user associated with the auth\_key
-- /user\_by\_id: Resolve a user id (as found in task `owner` fields and share payloads) to a username
-  - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
-    where it is an auth key as returned by `POST /auth_keys`.
-  - Query parameters:
-    - id [number]: The id of the user to resolve, e.g. `GET /user\_by\_id?id=1`.
-  - Output keys:
-    - username [string]: The username of the user with the given id.
-    - An unknown id returns 404.
+- /users/me: Retrieves the caller's own user, with its id and its username. It is
+  documented above under [Users](#users).
+- /users/{id}: Retrieves the user the URI names, with its id and its username. It is
+  documented above under [Users](#users).
 ### POST
 
-- /register\_account: Creates a new account for future use.
-  - Input keys:
-    - username [string]: The username for the new account. Must not already exist.
-    - password [string]: The password for the new account.
+- /users: Creates a new account for future use, and answers with the user it created
+  and a `Location` header naming the URI of that user. It is documented above under
+  [Users](#users).
 - /auth\_keys: Creates an auth key from HTTP Basic credentials, or revokes the one the caller
   presents. Both are documented above under [Auth keys](#auth-keys).
 
@@ -260,7 +296,9 @@ The task endpoints are documented together, under [Tasks](#tasks); the collectio
 `GET /tasks`, and `GET /tasks/{id}`, `POST /tasks`, and `PATCH /tasks/{id}` are the same
 resource at one URI. Their shares are documented together under [Shares](#shares), and
 `GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
-`DELETE /tasks/{id}/shares/{username}` are the same share resource at one URI. The auth key
+`DELETE /tasks/{id}/shares/{username}` are the same share resource at one URI. The user
+endpoints are documented together under [Users](#users), and `POST /users`,
+`GET /users/me`, and `GET /users/{id}` are the same user resource. The auth key
 endpoints are documented together under [Auth keys](#auth-keys), and `POST /auth_keys` and
 `DELETE /auth_keys` are the same resource at one URI.
 

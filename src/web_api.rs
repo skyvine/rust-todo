@@ -1,6 +1,6 @@
 use crate::core::{
-    ApplicationError, Permission, Share, SharePermission, ShareWrite, add_share_for_task, add_user,
-    auth_key_to_user, establish_connection, get_new_auth_key, get_task_permission,
+    ApplicationError, Permission, Share, SharePermission, ShareWrite, User, add_share_for_task,
+    add_user, auth_key_to_user, establish_connection, get_new_auth_key, get_task_permission,
     get_tasks_for_user, get_user_by_name, list_shares_for_task, remove_share, revoke_auth_key,
 };
 use crate::domain_types::{
@@ -423,6 +423,46 @@ struct SharePath {
     username: String,
 }
 
+/// The path parameter every user URI carries: the id of the user it names.
+///
+/// The id lives in the URI rather than in a query string, so the path is what
+/// identifies the user. A segment which cannot be an id names no user at all,
+/// and the router answers that with a 404 rather than an extractor answering
+/// 400 for a request which named nothing.
+#[derive(Deserialize)]
+struct UserPath {
+    id: i32,
+}
+
+/// The URI of one user: where it lives, and where it is read from.
+///
+/// A created user answers with this in a `Location`, so it is built in one
+/// place rather than spelled out where it is needed.
+fn user_uri(id: i32) -> String {
+    format!("/users/{id}")
+}
+
+/// A user in a response body: the id and the username, and never the password.
+///
+/// The row the database holds also carries the password hash, so it is not
+/// serialized directly: `User` does not derive `Serialize` for exactly that
+/// reason. This struct is the whole of what a response may say about a user,
+/// so the hash cannot reach one by accident.
+#[derive(Serialize)]
+struct UserRepresentation {
+    id: i32,
+    username: String,
+}
+
+impl From<&User> for UserRepresentation {
+    fn from(user: &User) -> Self {
+        UserRepresentation {
+            id: *user.ref_id(),
+            username: user.ref_username().clone(),
+        }
+    }
+}
+
 /// The URI of one share: where it lives, and where it is read, changed and
 /// removed from.
 ///
@@ -753,34 +793,30 @@ pub async fn get_task_shares(
     }
 }
 
-/// The query `GET /user_by_id` reads the user id from.
-#[derive(Deserialize)]
-struct UserByIdQuery {
-    id: i32,
-}
-
-/// Resolves a user id (as exposed in `Task`'s `owner` field and in share
-/// responses) to that user's username. User ids are public, so an unknown
-/// id simply returns 404.
-#[get("/user_by_id")]
-pub async fn get_user_by_id(
-    auth_key: AuthKey,
-    query: actix_web::web::Query<UserByIdQuery>,
-) -> impl Responder {
+/// Returns the user the URI names.
+///
+/// The id is in the path, so the path is what identifies the user, the same
+/// way it identifies a task. User ids are public — they appear in the `owner`
+/// field of a task and in the share payloads — so an unknown id is a 404
+/// rather than a hidden one.
+#[get("/users/{id}")]
+pub async fn get_user(auth_key: AuthKey, path: actix_web::web::Path<UserPath>) -> impl Responder {
+    let user_id = path.into_inner().id;
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Get User By ID", %request_id).entered();
+    let _enter_guard = span!(Level::ERROR, "Get User", %request_id).entered();
 
     match establish_connection() {
         Ok(mut connection) => {
-            let _user = match auth_key_to_user(auth_key.as_str(), &mut connection) {
+            let _caller = match auth_key_to_user(auth_key.as_str(), &mut connection) {
                 Ok(user) => user,
                 Err(e) => return e.into_http_response(&format!("{request_id}")),
             };
 
-            match crate::core::get_user_by_id(&query.id, &mut connection) {
-                Ok(user) => HttpResponse::Ok().json(
-                    json!({"request_id": format!("{request_id}"), "username": user.ref_username()}),
-                ),
+            match crate::core::get_user_by_id(&user_id, &mut connection) {
+                Ok(user) => HttpResponse::Ok().json(json!({
+                    "request_id": format!("{request_id}"),
+                    "user": UserRepresentation::from(&user),
+                })),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -794,17 +830,23 @@ pub async fn get_user_by_id(
     }
 }
 
-/// Returns the username of the currently logged in user.
-#[get("/whoami")]
-pub async fn whoami(auth_key: AuthKey) -> impl Responder {
+/// Returns the caller's own user: the resource relative to the caller.
+///
+/// The URI names the caller rather than a row, so the answer is the one user
+/// the request was made by. The id is in the answer as well as the username,
+/// because the id appears in every task and share payload, and a client which
+/// could not look its own id up would have to guess it.
+#[get("/users/me")]
+pub async fn get_current_user(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Who Am I Request", %request_id).entered();
+    let _enter_guard = span!(Level::ERROR, "Get Current User", %request_id).entered();
 
     match establish_connection() {
         Ok(mut conn) => match auth_key_to_user(auth_key.as_str(), &mut conn) {
-            Ok(user) => HttpResponse::Ok().json(
-                json!({ "request_id": format!("{}", request_id), "username": user.ref_username()}),
-            ),
+            Ok(user) => HttpResponse::Ok().json(json!({
+                "request_id": format!("{request_id}"),
+                "user": UserRepresentation::from(&user),
+            })),
             Err(e) => {
                 event!(Level::ERROR, "Unable to look up user");
                 e.into_http_response(&format!("{request_id}"))
@@ -876,24 +918,35 @@ pub async fn add_task(
         }
     }
 }
+/// The body of a request which creates a user: the username and the password.
+///
+/// The password is never kept as it arrives: it is hashed before it is
+/// stored, and the hash stays in the database. The struct is zeroized when the
+/// request is done with it, so the cleartext does not outlive the handler.
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
 struct UserRegistrationPayload {
     username: String,
     password: String,
 }
 
-/// Create an account with the given account info.
+/// Creates an account, and answers `201 Created` with a `Location` naming the
+/// new user's URI and the user itself as its representation.
 ///
-/// On a success, the user will be added to the database as a valid user and return HTTP OK.
+/// The URI names a collection rather than an operation: `POST /users` creates a
+/// user, the way `POST /tasks` creates a task. The body is the same
+/// `{username, password}` it has always been, and the answer names the account
+/// which was created, so a client never has to ask a second question to learn
+/// which one it has just made.
 ///
-/// In any error state this will create a log event at the ERROR level and return an appropriate
-/// error HTTP response to send back to the client.
-#[post("/register_account")]
-pub async fn register_account(
+/// The representation carries the id and the username, and never the password
+/// hash: the hash is the server's business, and no response says anything
+/// about it.
+#[post("/users")]
+pub async fn create_user(
     mut account_info: actix_web::web::Json<UserRegistrationPayload>,
 ) -> impl Responder {
     let request_id = Uuid::new_v4();
-    let _enter_guard = span!(Level::ERROR, "Registering Account", %request_id).entered();
+    let _enter_guard = span!(Level::ERROR, "Create User", %request_id).entered();
 
     // move not allowed in .values() call below, avoid cloning by replacing
     let un = match Username::new(std::mem::take(&mut account_info.username)) {
@@ -922,7 +975,12 @@ pub async fn register_account(
             event!(Level::TRACE, "Established connection to database.");
 
             match add_user(&un, &hashed_password, &mut conn) {
-                Ok(()) => HttpResponse::Created().finish(),
+                Ok(user) => HttpResponse::Created()
+                    .insert_header((actix_web::http::header::LOCATION, user_uri(*user.ref_id())))
+                    .json(json!({
+                        "request_id": format!("{request_id}"),
+                        "user": UserRepresentation::from(&user),
+                    })),
                 Err(e) => e.into_http_response(&format!("{request_id}")),
             }
         }
@@ -1337,7 +1395,7 @@ mod tests {
         password: &str,
     ) -> ServiceResponse {
         let request = test::TestRequest::post()
-            .uri("/register_account")
+            .uri("/users")
             .set_json(super::UserRegistrationPayload {
                 username: String::from(username),
                 password: String::from(password),
@@ -1458,6 +1516,50 @@ mod tests {
         })
     }
 
+    /// The body of a response as text, so that a test can look at what it
+    /// says and not only at what it parses as.
+    fn response_body_text(response: ServiceResponse) -> String {
+        let bytes = response
+            .into_body()
+            .try_into_bytes()
+            .expect("Unable to extract bytes from response");
+        String::from_utf8(bytes.to_vec()).expect("A response body is UTF-8.")
+    }
+
+    /// The keys of a JSON object, sorted, so that two objects can be compared
+    /// for shape.
+    fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("A JSON object.")
+            .keys()
+            .map(|key| key.as_str())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// The user a response describes: the object under its `user` key.
+    fn extract_json_user(response: ServiceResponse) -> serde_json::Value {
+        extract_json_from_constructor(response, "user", |user| user.clone())
+    }
+
+    /// The username of the user a response describes.
+    fn extract_json_username(response: ServiceResponse) -> String {
+        extract_json_from_constructor(response, "user", |user| match user["username"].as_str() {
+            Some(name) => String::from(name),
+            None => panic!("The user has no username! {user}"),
+        })
+    }
+
+    /// The id of the user a response describes.
+    fn extract_json_user_id(response: ServiceResponse) -> i32 {
+        extract_json_from_constructor(response, "user", |user| match user["id"].as_i64() {
+            Some(id) => id as i32,
+            None => panic!("The user has no id! {user}"),
+        })
+    }
+
     /// The keys of a response's JSON object, so two error bodies can be
     /// compared for shape.
     ///
@@ -1500,7 +1602,12 @@ mod tests {
             "register-account-is-successful-password",
         )
         .await;
-        assert_response_success(response, "Error status code");
+        let response = assert_response_success(response, "Error status code");
+        assert_eq!(
+            response.status().as_u16(),
+            201,
+            "An account which was created answers 201."
+        );
     }
 
     #[actix_web::test]
@@ -1527,16 +1634,16 @@ mod tests {
         let auth_key =
             register_and_create_auth_key(&app, username.as_str(), password.as_str()).await;
 
-        let whoami_request = test::TestRequest::get()
-            .uri("/whoami")
+        let current_user_request = test::TestRequest::get()
+            .uri("/users/me")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
-        let whoami_response = assert_response_success(
-            test::call_service(&app, whoami_request).await,
+        let current_user_response = assert_response_success(
+            test::call_service(&app, current_user_request).await,
             "Whoami request failed.",
         );
 
-        let response_name = extract_json_string(whoami_response, "username");
+        let response_name = extract_json_username(current_user_response);
         assert_eq!(username, response_name);
     }
 
@@ -1647,12 +1754,12 @@ mod tests {
 
         // No Authorization header at all: no auth key reached the server to be
         // judged, so the challenge names the request itself as what to fix.
-        let request = test::TestRequest::get().uri("/whoami").to_request();
+        let request = test::TestRequest::get().uri("/users/me").to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
-            "/whoami without an Authorization header did not return 401."
+            "/users/me without an Authorization header did not return 401."
         );
         assert_only_challenge(
             &response,
@@ -1669,14 +1776,14 @@ mod tests {
             "Bearer some-auth-key and", // trailing word
         ] {
             let request = test::TestRequest::get()
-                .uri("/whoami")
+                .uri("/users/me")
                 .insert_header((AUTHORIZATION, header_value))
                 .to_request();
             let response = test::call_service(&app, request).await;
             assert_eq!(
                 response.status().as_u16(),
                 401,
-                "/whoami with {header_value:?} did not return 401."
+                "/users/me with {header_value:?} did not return 401."
             );
             assert_only_challenge(
                 &response,
@@ -1693,14 +1800,14 @@ mod tests {
         // A well-formed header naming a key which is unknown or expired: the
         // key was presented and then refused, so the client needs a new one.
         let request = test::TestRequest::get()
-            .uri("/whoami")
+            .uri("/users/me")
             .insert_header((AUTHORIZATION, "Bearer this-is-not-a-valid-auth-key"))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
-            "/whoami with an unknown auth key did not return 401."
+            "/users/me with an unknown auth key did not return 401."
         );
         assert_only_challenge(
             &response,
@@ -1750,15 +1857,15 @@ mod tests {
 
         let auth_key = register_and_create_auth_key(&app, username, password).await;
 
-        let whoami_request = test::TestRequest::get()
-            .uri("/whoami")
+        let current_user_request = test::TestRequest::get()
+            .uri("/users/me")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
-        let whoami_response = assert_response_success(
-            test::call_service(&app, whoami_request).await,
+        let current_user_response = assert_response_success(
+            test::call_service(&app, current_user_request).await,
             "Whoami request failed.",
         );
-        assert_eq!(extract_json_string(whoami_response, "username"), username);
+        assert_eq!(extract_json_username(current_user_response), username);
     }
 
     /// An auth key is created at a URI of its own, so the creation has to say
@@ -1814,15 +1921,15 @@ mod tests {
         );
 
         // The key the client was handed is one the server accepts.
-        let whoami_request = test::TestRequest::get()
-            .uri("/whoami")
+        let current_user_request = test::TestRequest::get()
+            .uri("/users/me")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
-        let whoami_response = assert_response_success(
-            test::call_service(&app, whoami_request).await,
+        let current_user_response = assert_response_success(
+            test::call_service(&app, current_user_request).await,
             "The created auth key does not work.",
         );
-        assert_eq!(extract_json_string(whoami_response, "username"), username);
+        assert_eq!(extract_json_username(current_user_response), username);
     }
 
     /// Revoking an auth key removes the one the caller presented, and the key
@@ -1850,17 +1957,17 @@ mod tests {
             "A revoked auth key has nothing left to say about it."
         );
 
-        let whoami_request = test::TestRequest::get()
-            .uri("/whoami")
+        let current_user_request = test::TestRequest::get()
+            .uri("/users/me")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
-        let whoami_response = test::call_service(&app, whoami_request).await;
+        let current_user_response = test::call_service(&app, current_user_request).await;
         assert_unauthorized(
-            &whoami_response,
+            &current_user_response,
             "A revoked auth key should not authenticate anything.",
         );
         assert_only_challenge(
-            &whoami_response,
+            &current_user_response,
             super::BEARER_INVALID_TOKEN_CHALLENGE,
             "A revoked auth key got no challenge telling the client to get new credentials.",
         );
@@ -1912,12 +2019,12 @@ mod tests {
         );
 
         // The key is untouched: a 404 removed nothing.
-        let whoami_request = test::TestRequest::get()
-            .uri("/whoami")
+        let current_user_request = test::TestRequest::get()
+            .uri("/users/me")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         assert_response_success(
-            test::call_service(&app, whoami_request).await,
+            test::call_service(&app, current_user_request).await,
             "The refused URI revoked the auth key anyway.",
         );
     }
@@ -3405,14 +3512,14 @@ mod tests {
         };
 
         let request = test::TestRequest::get()
-            .uri(&format!("/user_by_id?id={user_id}"))
+            .uri(&format!("/users/{user_id}"))
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let response = assert_response_success(
             test::call_service(&app, request).await,
             "User by id lookup failed.",
         );
-        let response_name = extract_json_string(response, "username");
+        let response_name = extract_json_username(response);
         assert_eq!(username, response_name);
     }
 
@@ -3425,7 +3532,7 @@ mod tests {
         let auth_key = register_and_create_auth_key(&app, username, password).await;
 
         let request = test::TestRequest::get()
-            .uri("/user_by_id?id=-1")
+            .uri("/users/-1")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let response = test::call_service(&app, request).await;
@@ -3436,26 +3543,229 @@ mod tests {
         );
     }
 
+    /// A user is named by its URI, so a path which cannot name one is a missing
+    /// resource rather than a malformed request: the router answers 404, where
+    /// the old query string asked a 400 of a request which named nothing.
+    ///
+    /// `GET /users` is not among them: it names the collection, which has no
+    /// listing to offer.
     #[actix_web::test]
-    async fn cannot_get_user_without_a_valid_id_query_parameter() {
-        let username = "cannot-get-user-without-id-username";
-        let password = "cannot-get-user-without-id-password";
+    async fn a_path_which_cannot_name_a_user_is_not_found() {
+        let username = "unusable-user-path-username";
+        let password = "unusable-user-path-password";
         let app = test::init_service(build_app!()).await;
 
         let auth_key = register_and_create_auth_key(&app, username, password).await;
 
-        for uri in [
-            "/user_by_id",
-            "/user_by_id?id=",
-            "/user_by_id?id=not-a-number",
-        ] {
+        for uri in ["/users", "/users/", "/users/not-a-number"] {
             let request = test::TestRequest::get()
                 .uri(uri)
                 .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
                 .to_request();
             let response = test::call_service(&app, request).await;
-            assert_eq!(response.status().as_u16(), 400, "{uri} should be a 400.");
-            assert_json_error_with_request_id(response);
+            assert_eq!(
+                response.status().as_u16(),
+                404,
+                "{uri} names no user, so it should be a 404."
+            );
+        }
+    }
+
+    /// A created user is a resource at a URI of its own, so the creation says
+    /// which one it made: the `Location` names it by the id of its row, and the
+    /// body carries the user itself.
+    #[actix_web::test]
+    async fn a_created_user_is_at_the_uri_it_reports() {
+        let username = "created-user-location-username";
+        let password = "created-user-location-password";
+        let app = test::init_service(build_app!()).await;
+
+        let created = assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
+        assert_eq!(
+            created.status().as_u16(),
+            201,
+            "An account which was created answers 201."
+        );
+
+        let location = created
+            .headers()
+            .get(LOCATION)
+            .expect("A 201 must name the user it created.")
+            .to_str()
+            .expect("A Location is ASCII.")
+            .to_string();
+        let id = location
+            .rsplit('/')
+            .next()
+            .expect("A Location ends in the id of the user it names.")
+            .to_string();
+        assert_eq!(
+            location,
+            format!("/users/{id}"),
+            "The Location of a created user is the URI of that user."
+        );
+
+        // The body names the same user, so a client never has to ask a second
+        // question to learn what it was handed.
+        let user = extract_json_user(created);
+        assert_eq!(
+            user["id"].as_i64().map(|id| id.to_string()),
+            Some(id.clone()),
+            "The created user and its Location name the same user."
+        );
+        assert_eq!(user["username"].as_str(), Some(username));
+
+        // The URI the creation named serves the user it named.
+        let auth_key = extract_json_string(
+            assert_response_success(
+                create_auth_key(&app, username, password).await,
+                "Could not create an auth key.",
+            ),
+            "auth_key",
+        );
+        let request = test::TestRequest::get()
+            .uri(&location)
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "The URI of a created user should serve that user.",
+        );
+        assert_eq!(extract_json_username(response), username);
+    }
+
+    /// The caller's own user is at a URI of its own, and the router has to
+    /// reach it before the one which takes an id: `me` is not an id, so the
+    /// `{id}` route would answer 404 for it.
+    #[actix_web::test]
+    async fn the_callers_own_user_is_not_shadowed_by_the_id_route() {
+        let username = "current-user-username";
+        let password = "current-user-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
+
+        let request = test::TestRequest::get()
+            .uri("/users/me")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "The caller's own user should be at /users/me.",
+        );
+        assert_eq!(extract_json_username(response), username);
+    }
+
+    /// The id of the caller is in the answer as well as the username, because
+    /// the id appears in every task and share payload, and a client which
+    /// could not look its own id up would have to guess it.
+    #[actix_web::test]
+    async fn the_callers_own_user_carries_their_id() {
+        let username = "current-user-id-username";
+        let password = "current-user-id-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
+
+        let request = test::TestRequest::get()
+            .uri("/users/me")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "Unable to read the caller's own user.",
+        );
+        let user_id = extract_json_user_id(response);
+
+        // The same user, read at the URI which names it by that id.
+        let request = test::TestRequest::get()
+            .uri(&format!("/users/{user_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "Unable to read the user by id.",
+        );
+        let by_id = extract_json_user(response);
+        assert_eq!(by_id["id"].as_i64(), Some(user_id as i64));
+        assert_eq!(by_id["username"].as_str(), Some(username));
+    }
+
+    /// The old URIs are gone rather than kept as aliases: there are no clients
+    /// to transition, and an alias would keep two URIs for one resource, which
+    /// is the problem being fixed.
+    #[actix_web::test]
+    async fn the_old_user_uris_are_gone() {
+        let app = test::init_service(build_app!()).await;
+
+        for (method, uri) in [
+            (Method::POST, "/register_account"),
+            (Method::GET, "/whoami"),
+            (Method::GET, "/user_by_id"),
+            (Method::GET, "/user_by_id?id=1"),
+        ] {
+            let request = test::TestRequest::default()
+                .method(method.clone())
+                .uri(uri)
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(
+                response.status().as_u16(),
+                404,
+                "{method} {uri} names no resource, so it should be a 404."
+            );
+        }
+    }
+
+    /// Nothing a response says about a user says anything about the password:
+    /// the hash stays in the database, and the representation of a user carries
+    /// its id and its username and nothing else.
+    #[actix_web::test]
+    async fn no_response_about_a_user_carries_the_password() {
+        let username = "no-password-in-response-username";
+        let password = "no-password-in-response-password";
+        let app = test::init_service(build_app!()).await;
+
+        let auth_key = register_and_create_auth_key(&app, username, password).await;
+
+        let request = test::TestRequest::get()
+            .uri("/users/me")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "Unable to read the caller's own user.",
+        );
+        let me_body = response_body_text(response);
+        let me_user: serde_json::Value =
+            serde_json::from_str(&me_body).expect("The body of a user is JSON.");
+        let user_id = me_user["user"]["id"].as_i64().expect("The user has an id.");
+
+        let request = test::TestRequest::get()
+            .uri(&format!("/users/{user_id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = assert_response_success(
+            test::call_service(&app, request).await,
+            "Unable to read the user by id.",
+        );
+        let by_id_body = response_body_text(response);
+        let by_id_user: serde_json::Value =
+            serde_json::from_str(&by_id_body).expect("The body of a user is JSON.");
+
+        for (body, user) in [(&me_body, &me_user), (&by_id_body, &by_id_user)] {
+            assert!(
+                !body.contains(password),
+                "A response about a user must not carry the password."
+            );
+            assert_eq!(
+                sorted_keys(&user["user"]),
+                vec!["id", "username"],
+                "The representation of a user carries its id and its username, and nothing else."
+            );
         }
     }
 
@@ -3476,14 +3786,14 @@ mod tests {
 
         // A 400 from the query string extractor.
         let request = test::TestRequest::get()
-            .uri("/user_by_id?id=not-a-number")
+            .uri("/tasks?completed=not-a-boolean")
             .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             400,
-            "/user_by_id with an unreadable query string should be a 400."
+            "/tasks with an unreadable query string should be a 400."
         );
         assert_json_content_type(&response, "The 400 said nothing about its body.");
 
@@ -3506,12 +3816,12 @@ mod tests {
         );
 
         // A 401.
-        let request = test::TestRequest::get().uri("/whoami").to_request();
+        let request = test::TestRequest::get().uri("/users/me").to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(
             response.status().as_u16(),
             401,
-            "/whoami without a key is a 401."
+            "/users/me without a key is a 401."
         );
         assert_json_content_type(&response, "The 401 said nothing about its body.");
     }
@@ -3522,13 +3832,12 @@ mod tests {
         let password = "no-body-media-type-password";
         let app = test::init_service(build_app!()).await;
 
-        let register_response = assert_response_success(
+        // The registration answers with the user it created, so it has a
+        // representation to describe; the revocation below has nothing left to
+        // say about the key it removed.
+        assert_response_success(
             register(&app, username, password).await,
             "Unable to register account",
-        );
-        assert!(
-            register_response.headers().get(CONTENT_TYPE).is_none(),
-            "An empty body has no representation to describe."
         );
 
         let created = assert_response_success(

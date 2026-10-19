@@ -1,4 +1,4 @@
-POST /register_account HTTP/1.1
+POST /users HTTP/1.1
 Host: 127.0.0.1
 Connection: close
 Content-Length: 63
@@ -8,3 +8,7 @@ Content-Type: application/json; charset=utf-8
 	"username": "manual-name",
 	"password": "manual-password"
 }
+
+# Answers 201 with a Location: /users/{id} header naming the URI of the new
+# user, and the user itself in the body: its id and its username, and never
+# the password or its hash.

@@ -362,15 +362,22 @@ pub fn add_task(
     }
 }
 
+/// Create a user with the given username and hashed password, and return the
+/// row which was created.
+///
+/// The row is returned rather than discarded, because the id the database gave
+/// the new user is what identifies it: it is what the user's own URI names,
+/// and what a client needs to find the account it has just created.
 pub fn add_user(
     un: &Username,
     hashed_password: &String,
     connection: &mut PgConnection,
-) -> Result<(), ApplicationError> {
+) -> Result<User, ApplicationError> {
     use crate::schema::users::dsl::*;
 
-    let query =
-        diesel::insert_into(users).values((username.eq(un.as_ref()), password.eq(hashed_password)));
+    let query = diesel::insert_into(users)
+        .values((username.eq(un.as_ref()), password.eq(hashed_password)))
+        .returning(User::as_select());
 
     event!(
         Level::TRACE,
@@ -378,10 +385,10 @@ pub fn add_user(
         diesel::debug_query::<diesel::pg::Pg, _>(&query)
     );
 
-    match query.execute(connection) {
-        Ok(_) => {
+    match query.get_result::<User>(connection) {
+        Ok(user) => {
             event!(Level::TRACE, "Query succeeded");
-            Ok(())
+            Ok(user)
         }
         Err(diesel::result::Error::DatabaseError(
             diesel::result::DatabaseErrorKind::UniqueViolation,
