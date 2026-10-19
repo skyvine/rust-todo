@@ -1528,19 +1528,6 @@ mod tests {
         String::from_utf8(bytes.to_vec()).expect("A response body is UTF-8.")
     }
 
-    /// The keys of a JSON object, sorted, so that two objects can be compared
-    /// for shape.
-    fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
-        let mut keys: Vec<&str> = value
-            .as_object()
-            .expect("A JSON object.")
-            .keys()
-            .map(|key| key.as_str())
-            .collect();
-        keys.sort();
-        keys
-    }
-
     /// The user a response describes: the object under its `user` key.
     fn extract_json_user(response: ServiceResponse) -> serde_json::Value {
         extract_json_from_constructor(response, "user", |user| user.clone())
