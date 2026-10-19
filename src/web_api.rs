@@ -1518,16 +1518,6 @@ mod tests {
         })
     }
 
-    /// The body of a response as text, so that a test can look at what it
-    /// says and not only at what it parses as.
-    fn response_body_text(response: ServiceResponse) -> String {
-        let bytes = response
-            .into_body()
-            .try_into_bytes()
-            .expect("Unable to extract bytes from response");
-        String::from_utf8(bytes.to_vec()).expect("A response body is UTF-8.")
-    }
-
     /// The user a response describes: the object under its `user` key.
     fn extract_json_user(response: ServiceResponse) -> serde_json::Value {
         extract_json_from_constructor(response, "user", |user| user.clone())
