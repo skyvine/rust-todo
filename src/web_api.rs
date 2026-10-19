@@ -741,13 +741,15 @@ pub async fn get_task_by_id(
     }
 }
 
-/// An endpoint to checks that the server is up.
+/// An endpoint to check that the server is up.
 ///
 /// This endpoint always responds with status OK simply to verify that
-/// the server is running and responding to requests.
-#[get("/is_alive")]
-pub async fn is_alive() -> impl Responder {
-    event!(Level::TRACE, "Responding to is_alive check");
+/// the server is running and responding to requests. It is not a resource and
+/// takes no credentials: a liveness probe has to be answerable by whatever is
+/// watching the server, which does not have an auth key.
+#[get("/health")]
+pub async fn health() -> impl Responder {
+    event!(Level::TRACE, "Responding to health check");
     HttpResponse::Ok()
 }
 
@@ -1579,17 +1581,35 @@ mod tests {
         }
     }
 
+    /// The health check answers whoever asks: a liveness probe has no auth key
+    /// to present, so the endpoint takes no credentials and asks for none.
     #[actix_web::test]
-    async fn is_alive() {
+    async fn health() {
         let app = test::init_service(build_app!()).await;
-        let request = test::TestRequest::get().uri("/is_alive").to_request();
+        let request = test::TestRequest::get().uri("/health").to_request();
         let response = assert_response_success(
             test::call_service(&app, request).await,
-            "Is alive check failed.",
+            "Health check failed.",
         );
         assert_eq!(
             response.into_body().size(),
             actix_web::body::BodySize::Sized(0)
+        );
+    }
+
+    /// The old URI is gone rather than kept as an alias: there are no clients
+    /// to transition, and `/health` is the name every deployment tool already
+    /// understands.
+    #[actix_web::test]
+    async fn the_is_alive_uri_is_gone() {
+        let app = test::init_service(build_app!()).await;
+
+        let request = test::TestRequest::get().uri("/is_alive").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            404,
+            "/is_alive names no resource, so it should be a 404."
         );
     }
 

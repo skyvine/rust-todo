@@ -16,7 +16,7 @@ macro_rules! build_app {
             .service(crate::web_api::add_task)
             .service(crate::web_api::get_tasks)
             .service(crate::web_api::get_task_by_id)
-            .service(crate::web_api::is_alive)
+            .service(crate::web_api::health)
             .service(crate::web_api::create_auth_key)
             .service(crate::web_api::delete_auth_key)
             .service(crate::web_api::create_user)

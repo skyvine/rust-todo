@@ -61,29 +61,29 @@ resolving your own id through a numeric id would be silly.
 
 ## Acceptance criteria
 
-- [ ] `POST /users`, `GET /users/me`, `GET /users/{id}`, and `GET /health`
+- [x] `POST /users`, `GET /users/me`, `GET /users/{id}`, and `GET /health`
       exist; `/register_account`, `/whoami`, `/user_by_id`, and `/is_alive` are
       gone.
-- [ ] `GET /users/me` returns the caller's username and is not shadowed by the
+- [x] `GET /users/me` returns the caller's username and is not shadowed by the
       `{id}` route.
-- [ ] `GET /users/{id}` returns `404` for an unknown id, as
+- [x] `GET /users/{id}` returns `404` for an unknown id, as
       `GET /user_by_id?id=N` does today.
-- [ ] `GET /health` is unauthenticated and returns `200` with an empty body.
-- [ ] No response body ever contains a password hash.
-- [ ] Tests updated: the `register` helper,
+- [x] `GET /health` is unauthenticated and returns `200` with an empty body.
+- [x] No response body ever contains a password hash.
+- [x] Tests updated: the `register` helper,
       `regitering_account_is_successful`, `duplicate_username_fails`,
       `auth_key_is_recognized` (which uses `/whoami`),
       `user_by_id_returns_username_for_existing_user`,
       `user_by_id_returns_404_for_unknown_id`,
       `cannot_get_user_without_a_valid_id_query_parameter` (repurpose or
       delete), `is_alive` (which asserts the empty body).
-- [ ] `README.md` has a users section and a health section, documenting
+- [x] `README.md` has a users section and a health section, documenting
       `/users/me` as the caller-relative resource.
-- [ ] `http_requests/post_registration.http`, `get_user_by_id.http`,
+- [x] `http_requests/post_registration.http`, `get_user_by_id.http`,
       `get_is_alive.http` updated.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [x] `cargo clippy` passes with no new warnings.
+- [x] `cargo test` passes.
+- [x] `cargo fmt --check` passes.
 
 ## Notes
 

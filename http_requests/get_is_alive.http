@@ -1,4 +1,7 @@
-GET /is_alive HTTP/1.1
+GET /health HTTP/1.1
 Host: 127.0.0.1
 Connection: close
 
+# Answers 200 with an empty body, for as long as the server is running. It
+# takes no credentials: whatever watches the server has no auth key to
+# present.

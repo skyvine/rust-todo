@@ -21,7 +21,7 @@ docker run -e DATABASE_URL=postgres://postgres:test-password@localhost/todo --ne
 
 ## Endpoints
 
-All data is sent and received as JSON. All responses (aside from is\_alive) additionally
+All data is sent and received as JSON. All responses (aside from `/health`) additionally
 include a request\_id key which uniquely identifies the request.
 
 Every endpoint which takes an auth\_key requires it in the `Authorization: Bearer <auth_key>`
@@ -270,6 +270,19 @@ URI the `Location` above names. Revoking a key is done by presenting it in the h
 why `DELETE /auth_keys` needs no URI segment at all. A revoked key stops working at once rather
 than at some later expiry, and nothing refreshes or rotates it.
 
+### Health
+
+`GET /health` is a liveness probe rather than a resource: it says whether the server is up
+and adds nothing else. `/health` is the name every deployment tool already understands,
+where `/is_alive` read like a boolean field rather than an endpoint.
+
+It is the one endpoint which takes no credentials, because whatever is watching the server
+has no auth key to present, and a probe which asks for one would only report that the
+watcher is unauthenticated.
+
+- `GET /health`: Answers `200 OK` with an empty body, for as long as the server is running.
+  - Takes no body and no credentials.
+
 ### DELETE
 
 - /tasks/{id}/shares/{username}: Remove a user's access to a task owned by the caller. It
@@ -279,7 +292,8 @@ than at some later expiry, and nothing refreshes or rotates it.
 
 ### GET
 
-- /is\_alive: unconditionally returns an Ok status
+- /health: unconditionally returns an Ok status with an empty body. It is documented above
+  under [Health](#health).
 - /users/me: Retrieves the caller's own user, with its id and its username. It is
   documented above under [Users](#users).
 - /users/{id}: Retrieves the user the URI names, with its id and its username. It is
