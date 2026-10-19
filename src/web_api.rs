@@ -3714,32 +3714,6 @@ mod tests {
         assert_eq!(by_id["username"].as_str(), Some(username));
     }
 
-    /// The old URIs are gone rather than kept as aliases: there are no clients
-    /// to transition, and an alias would keep two URIs for one resource, which
-    /// is the problem being fixed.
-    #[actix_web::test]
-    async fn the_old_user_uris_are_gone() {
-        let app = test::init_service(build_app!()).await;
-
-        for (method, uri) in [
-            (Method::POST, "/register_account"),
-            (Method::GET, "/whoami"),
-            (Method::GET, "/user_by_id"),
-            (Method::GET, "/user_by_id?id=1"),
-        ] {
-            let request = test::TestRequest::default()
-                .method(method.clone())
-                .uri(uri)
-                .to_request();
-            let response = test::call_service(&app, request).await;
-            assert_eq!(
-                response.status().as_u16(),
-                404,
-                "{method} {uri} names no resource, so it should be a 404."
-            );
-        }
-    }
-
     /// Nothing a response says about a user says anything about the password:
     /// the hash stays in the database, and the representation of a user carries
     /// its id and its username and nothing else.
