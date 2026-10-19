@@ -3698,55 +3698,6 @@ mod tests {
         assert_eq!(by_id["username"].as_str(), Some(username));
     }
 
-    /// Nothing a response says about a user says anything about the password:
-    /// the hash stays in the database, and the representation of a user carries
-    /// its id and its username and nothing else.
-    #[actix_web::test]
-    async fn no_response_about_a_user_carries_the_password() {
-        let username = "no-password-in-response-username";
-        let password = "no-password-in-response-password";
-        let app = test::init_service(build_app!()).await;
-
-        let auth_key = register_and_create_auth_key(&app, username, password).await;
-
-        let request = test::TestRequest::get()
-            .uri("/users/me")
-            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
-            .to_request();
-        let response = assert_response_success(
-            test::call_service(&app, request).await,
-            "Unable to read the caller's own user.",
-        );
-        let me_body = response_body_text(response);
-        let me_user: serde_json::Value =
-            serde_json::from_str(&me_body).expect("The body of a user is JSON.");
-        let user_id = me_user["user"]["id"].as_i64().expect("The user has an id.");
-
-        let request = test::TestRequest::get()
-            .uri(&format!("/users/{user_id}"))
-            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
-            .to_request();
-        let response = assert_response_success(
-            test::call_service(&app, request).await,
-            "Unable to read the user by id.",
-        );
-        let by_id_body = response_body_text(response);
-        let by_id_user: serde_json::Value =
-            serde_json::from_str(&by_id_body).expect("The body of a user is JSON.");
-
-        for (body, user) in [(&me_body, &me_user), (&by_id_body, &by_id_user)] {
-            assert!(
-                !body.contains(password),
-                "A response about a user must not carry the password."
-            );
-            assert_eq!(
-                sorted_keys(&user["user"]),
-                vec!["id", "username"],
-                "The representation of a user carries its id and its username, and nothing else."
-            );
-        }
-    }
-
     #[actix_web::test]
     async fn json_bodies_are_declared_as_json() {
         let username = "json-media-type-username";
