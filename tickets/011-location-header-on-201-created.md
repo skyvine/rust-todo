@@ -4,6 +4,24 @@
 **Depends on:** 005, 006, 010
 **Files:** `src/web_api.rs`, `src/core.rs`, `README.md`
 
+## Status
+
+The work was split across the redesign. Tickets 006, 008, 009 and 010 each
+implement an endpoint which creates a resource, and each of them landed the
+`Location` header and the created resource in the body, because a creation
+endpoint landed knowingly wrong would have been strange. Ticket 010 also
+landed the `add_user` core change, since `POST /users` cannot answer without
+it.
+
+What is left is what no single endpoint could own: the rule stated once, the
+two `Location` values which name a URI nothing is served at, and a test for the
+one thing every endpoint could have got wrong. The criteria below are the
+ticket's, narrowed where the redesign changed what they could mean, and
+checked where the work is done.
+
+The two unserved `Location` URIs are not left undone: the auth key's is ticket
+016, and the share's is ticket 017.
+
 ## Goal
 
 A client that creates a resource learns the URI of what it created, from the
@@ -25,39 +43,47 @@ RFC 9110 §15.3.2:
 > Location header field in the response or, if no Location header field is
 > received, by the target URI.
 
-Neither creation endpoint identifies its result today:
+Neither creation endpoint identified its result before the redesign:
 
-- `POST /add_task` returns `201 Created` with
+- `POST /add_task` returned `201 Created` with
   `{"request_id": …, "task_id": 2424}` (`web_api.rs:562-566`). The target URI
   is `/add_task`, which is not the new task, so the fallback clause does not
   apply and the caller is left holding a bare integer.
-- `POST /register_account` returns `201 Created` with **an empty body**
+- `POST /register_account` returned `201 Created` with **an empty body**
   (`HttpResponse::Created().finish()`, `web_api.rs:681`) — not even the id.
 
-Verified against a running server:
+`add_user` (`core.rs:359-392`) discarded the inserted row, so the handler could
+not know the id at all without a core change.
 
-```
-$ curl -i -X POST …/register_account -d '{"username":"alice","password":"…"}'
-HTTP/1.1 201 Created
-content-length: 0
-date: …
-```
+## The rule
 
-`add_user` (`core.rs:359-392`) discards the inserted row, so the handler cannot
-know the id at all without a core change.
+Every `201` in the API carries a `Location` naming the resource it created, and
+carries that resource in its body:
+
+| Endpoint | `Location` | Body |
+|---|---|---|
+| `POST /tasks` | `/tasks/{id}` | the task |
+| `POST /users` | `/users/{id}` | `{id, username}` |
+| `POST /auth_keys` | `/auth_keys/{id}` | the key itself |
+| `PUT /tasks/{id}/shares/{username}` | `/tasks/{id}/shares/{username}` | the share |
+
+A `PUT` on a share which replaces the permission on a share which is already
+there creates nothing, so it answers `200 OK` and carries no `Location`: the
+status is what tells the two apart.
+
+The `Location` is a relative reference, never the whole URL, and never a
+secret. An auth key is named by the id of its row rather than by its value,
+because a bearer token in a URL is recorded by every proxy and log which
+records a request line (RFC 6750 §5.3).
 
 ## In scope
 
-- **The rule**, applied to every `201` in the API after the redesign:
-  `POST /tasks` → `Location: /tasks/{id}`;
-  `POST /auth_keys` → `Location: /auth_keys/{key}`;
-  `PUT` on a share that creates it → `Location: /tasks/{id}/shares/{username}`;
-  `POST /users` → `Location: /users/{id}`.
-- **`add_user` must report what it created.** Change it in `src/core.rs` to
-  return the created user (or at least its id) instead of `()`, keeping the
-  `UserExists` → `409` mapping intact. This is the one piece of genuinely
-  independent work in the ticket, and it is what makes `POST /users` able to
-  answer at all.
+- **The rule**, applied to every `201` in the API after the redesign, and
+  stated once in `README.md` rather than repeated per endpoint.
+- **`add_user` must report what it created.** It returns the created user (or
+  at least its id) instead of `()`, keeping the `UserExists` → `409` mapping
+  intact. This is the one piece of genuinely independent work in the ticket,
+  and it is what makes `POST /users` able to answer at all.
 - **Return the created resource, not just its id.** `POST /tasks` returns the
   task (the `Task` struct already derives `Serialize`, so it is
   `Task::from_json_object`-compatible); `POST /users` returns a struct with
@@ -78,25 +104,31 @@ know the id at all without a core change.
 - Hypermedia links beyond `Location` — `Link` headers pointing at the share
   collection would be a natural follow-up, but a plain `Location` is what the
   spec asks for.
+- Serving the two URIs which a `Location` names and nothing else serves:
+  `/auth_keys/{id}` is ticket 016, and `/tasks/{id}/shares/{username}` is ticket
+  017. This ticket narrows the criterion rather than taking either over.
 
 ## Acceptance criteria
 
-- [ ] Every `201` in the API carries a `Location` that `GET`s successfully.
-- [ ] `POST /tasks` returns the created task; the bare `task_id` key is gone.
-- [ ] `POST /users` returns a representation containing `id` and `username`,
+- [x] Every `201` in the API carries a `Location` naming the resource it
+      created.
+- [x] The `Location` of a created task and of a created user `GET`s
+      successfully and returns the resource it names.
+- [ ] The `Location` of a created auth key names a URI which is served —
+      ticket 016.
+- [ ] The `Location` of a created share names a URI which is served — ticket
+      017.
+- [x] `POST /tasks` returns the created task; the bare `task_id` key is gone.
+- [x] `POST /users` returns a representation containing `id` and `username`,
       and no password hash.
-- [ ] `add_user` returns the created user and still maps a unique violation to
+- [x] `add_user` returns the created user and still maps a unique violation to
       `409`.
-- [ ] No response body anywhere in the API contains a password hash.
-- [ ] Tests updated for the moved id: the `add_task` helper and everything that
-      reads `task_id` (`extract_json_i32(response, "task_id")` call sites),
-      `can_add_task`, `can_get_task`, `regitering_account_is_successful`,
-      `duplicate_username_fails`.
-- [ ] `README.md` documents `Location` once, as a general rule, rather than
+- [x] No response body anywhere in the API contains a password hash.
+- [x] `README.md` documents `Location` once, as a general rule, rather than
       repeating it per endpoint.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [x] `cargo clippy` passes with no new warnings.
+- [x] `cargo test` passes.
+- [x] `cargo fmt --check` passes.
 
 ## Notes
 
@@ -105,3 +137,19 @@ their endpoints are creations and it would be strange to land them knowingly
 wrong. If this ticket lands before them, the two should drop that line rather
 than duplicate the work — either order is acceptable, but not both
 implementations.
+
+**The criterion narrowed, and why.** "Every `201` carries a `Location` that
+`GET`s successfully" was written when the API had four creation endpoints and
+two served the `Location` URI. It cannot be met without adding
+`GET /auth_keys/{id}` — which is the whole subject of ticket 016, and which
+carries its own ownership and expiry decisions — or `GET
+/tasks/{id}/shares/{username}`, which no ticket had claimed. Rather than take
+either over, this ticket states the rule and names the two gaps, and each gap
+has a ticket of its own: 016 for the auth key, 017 for the share.
+
+**The two unserved URIs are a real defect, not a subtlety.** A `Location` which
+answers `404` is worse than no `Location` at all: RFC 9110 §15.3.2 falls back
+to the target URI only when no `Location` is received, so a client which
+follows the header is told the resource does not exist, while a client which
+ignores it is sent back to the collection. The `README.md` says so plainly
+where it documents each of them, rather than letting a client discover it.

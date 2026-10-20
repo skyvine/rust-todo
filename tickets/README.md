@@ -40,8 +40,9 @@ line points at a lower number, so no ticket is ever blocked by a later one.
 | 014 | [request-id-out-of-representations.md](014-request-id-out-of-representations.md) | `request_id` is embedded in every representation, no URI returns its own resource, and an error helper builds success bodies. |
 | 015 | [docs-and-http-examples-for-the-new-uris.md](015-docs-and-http-examples-for-the-new-uris.md) | Docs and `http_requests/` sweep. |
 | 016 | [addressable-auth-key-with-expiry.md](016-addressable-auth-key-with-expiry.md) | The `Location` of a created auth key names a URI nothing is served at, and expiry is invisible. |
+| 017 | [get-a-single-share.md](017-get-a-single-share.md) | The `Location` of a created share names a URI nothing is served at. |
 
-The numbering has four phases, which is why 011–014 come after the redesign
+The numbering has five phases, which is why 011–014 come after the redesign
 even though they are smaller than the redesign tickets:
 
 - **001–004** change media types, headers, and status codes but no URIs, so
@@ -58,6 +59,10 @@ even though they are smaller than the redesign tickets:
   method should come from 012's mechanism. It is also where 009's "the key value
   may be the URI segment" decision gets reversed — see
   [009's "Why the URI carries the id"](009-auth-key-resource-replacing-login-and-logout.md).
+- **017** is the same kind of loose end, found by 011 rather than left by it:
+  008 minted a `Location` for a created share and scoped out a `GET` on it, so
+  the URI is real but unserved. It is a smaller sibling of 016, and it depends
+  on the same 012 mechanism for the path's `Allow`.
 
 Dependencies:
 
@@ -70,6 +75,7 @@ Dependencies:
 - 016 depends on 009 and 012. 015 does not depend on 016: the README it writes
   describes the API as it stands, and 016 changes one endpoint of it, so 015 can
   land first and 016 updates that section the way every other ticket does.
+- 017 depends on 008, 011 and 012, for the same reasons 016 does.
 
 ## Findings map
 
@@ -89,6 +95,8 @@ Dependencies:
 | 12 | `POST /share_task` is an idempotent upsert, so it is `PUT` | 008 |
 | 13 | `DELETE /unshare_task` carries a request body | 008 |
 | 14 | Stale `README.md` / `http_requests/` (send `auth_key` in bodies) | 015 |
+| 15 | A `Location` naming a URI nothing is served at (a created auth key) | 016 |
+| 16 | A `Location` naming a URI nothing is served at (a created share) | 017 |
 
 ## Conventions for working on these tickets
 
