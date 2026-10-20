@@ -54,6 +54,14 @@ miss there is still a 404: an unknown target username in a `PUT` or `DELETE` on 
 an unknown id in `/users/{id}`. `POST /auth_keys` naming a username no account has is not one
 of these misses: it is a refused authentication attempt, and is answered as one.
 
+Every endpoint which creates a resource answers `201 Created` with the created resource twice
+over: a `Location` header naming the URI of the resource it just created, and the resource
+itself in the body. RFC 9110 §15.3.2 identifies the primary resource created by a request
+either by the `Location` header or, failing it, by the target URI — and the target URI of a
+creation is the collection the resource was created in, not the new member of it, so the header
+is what names what was made. The `Location` is a relative reference (`/tasks/1`), never the
+whole URL, and never a secret: no `Location` in this API carries a credential.
+
 ### Tasks
 
 A task is one resource at one URI, `/tasks/{id}`, and the id is part of the path rather
@@ -89,9 +97,9 @@ changed, and nothing removes it.
     - description \[string] (optional): A description of the task (could be long)
   - Output keys:
     - task [object]: The created task.
-  - Statuses: `201 Created`, with a `Location: /tasks/{id}` header naming the URI the new
-    task can be read and changed at; `400` if the title is unusable; `401` if the auth key
-    is missing, malformed, unknown, or expired.
+  - Statuses: `201 Created`, with a `Location: /tasks/{id}` header naming the URI the new task
+    can be read and changed at; `400` if the title is unusable; `401` if the auth key is
+    missing, malformed, unknown, or expired.
 - `GET /tasks/{id}`: Retrieve the contents of the task the URI names. Shared access
   (read or read-write) is honored.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
@@ -121,8 +129,12 @@ changed, and nothing removes it.
 A share is one user's access to one task, so it is a sub-resource of the task rather than an
 action on it: the shares of a task are at `/tasks/{id}/shares`, and the share for one named
 user is at `/tasks/{id}/shares/{username}`. The URI names the share, which is what lets a
-client read, change and remove it by URI. Only the owner of a task may list, create or remove
+client change and remove it by URI. Only the owner of a task may list, create or remove
 its shares; a `read_write` grantee may edit the task itself but not share it onward.
+
+The shares of a task are read as the collection at `GET /tasks/{id}/shares`. Nothing is served
+at the URI of a single share, so the `Location` a created share carries names a URI which does
+not answer.
 
 - `GET /tasks/{id}/shares`: List the shares on the task.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
@@ -151,15 +163,14 @@ its shares; a `read_write` grantee may edit the task itself but not share it onw
   - Output keys:
     - share [object]: The share as it now stands, in the same shape the listing uses, so
       a client which gets a 200 learns what the share is without asking again.
-  - Statuses: `201 Created`, with a `Location: /tasks/{id}/shares/{username}` header
-    naming the share's own URI, when it created the share; `200 OK` when it replaced the
-    permission on a share which was already there. The status is the only way to tell those
-    two apart, which is why a created share answers 201 with a `Location` and a replaced one
-    answers 200 with no `Location` at all. Also `400` if the permission is neither "read"
-    nor "read\_write"; `404` if the path names no task, and for a username no account has,
-    since usernames are public and a share can name one that does not exist; `403` if the
-    task is not the caller's, and for a task which does not exist; `401` if the auth key is
-    missing, malformed, unknown, or expired.
+  - Statuses: `201 Created`, with a `Location: /tasks/{id}/shares/{username}` header naming
+    the share's own URI, when it created the share; `200 OK`, with no `Location` at all, when
+    it replaced the permission on a share which was already there. The status is the only way
+    to tell those two apart. Also `400` if the permission is neither "read" nor
+    "read\_write"; `404` if the path names no task, and for a username no account has, since
+    usernames are public and a share can name one that does not exist; `403` if the task is
+    not the caller's, and for a task which does not exist; `401` if the auth key is missing,
+    malformed, unknown, or expired.
 - `DELETE /tasks/{id}/shares/{username}`: Removes the share, so the named user loses the
   named access to the named task. This request has no body: the URI says everything it acts
   on, and RFC 9110 §9.3.5 gives content in a `DELETE` no defined meaning, so any
