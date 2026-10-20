@@ -1539,6 +1539,16 @@ mod tests {
         })
     }
 
+    /// The whole body of a response, as JSON.
+    fn json_body(response: ServiceResponse) -> serde_json::Value {
+        let bytes = response
+            .into_body()
+            .try_into_bytes()
+            .expect("Unable to extract bytes from response");
+        serde_json::from_slice(bytes.as_ref())
+            .unwrap_or_else(|_| panic!("Unable to deserialize alleged JSON: {bytes:?}"))
+    }
+
     /// The keys of a response's JSON object, so two error bodies can be
     /// compared for shape.
     ///
@@ -1546,15 +1556,47 @@ mod tests {
     /// bodies verbatim would compare nothing useful: what must match is the
     /// set of keys, which is what tells a client how to read the failure.
     fn json_body_keys(response: ServiceResponse) -> Vec<String> {
-        let bytes = response
-            .into_body()
-            .try_into_bytes()
-            .expect("Unable to extract bytes from response");
-        let body: serde_json::Value = serde_json::from_slice(bytes.as_ref())
-            .unwrap_or_else(|_| panic!("Unable to deserialize alleged JSON: {bytes:?}"));
+        let body = json_body(response);
         match body.as_object() {
             Some(object) => object.keys().cloned().collect(),
             None => panic!("{body} is not a JSON object!"),
+        }
+    }
+
+    /// Asserts that nothing in a body names or carries a password.
+    ///
+    /// The password and its hash are the server's business: a response which
+    /// carried either of them would hand every reader of it the credential.
+    /// The hash is the more likely accident, since it is a column of the row
+    /// the user is built from, so it is checked for by the shape of the
+    /// Argon2 encoding as well as by the absence of the cleartext.
+    fn assert_carries_no_password(body: &serde_json::Value, password: &str) {
+        match body {
+            serde_json::Value::Object(object) => {
+                for (key, value) in object {
+                    assert!(
+                        !key.to_lowercase().contains("password"),
+                        "A response carries a key named {key}: {body}"
+                    );
+                    assert_carries_no_password(value, password);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    assert_carries_no_password(item, password);
+                }
+            }
+            serde_json::Value::String(string) => {
+                assert!(
+                    string.as_str() != password,
+                    "A response carries the password itself: {body}"
+                );
+                assert!(
+                    !string.starts_with("$argon2"),
+                    "A response carries a password hash: {body}"
+                );
+            }
+            _ => {}
         }
     }
 
@@ -3616,6 +3658,60 @@ mod tests {
             "The URI of a created user should serve that user.",
         );
         assert_eq!(extract_json_username(response), username);
+    }
+
+    /// The password and its hash are the server's business, so no response
+    /// anywhere in the API may carry either of them.
+    ///
+    /// The user is built from a row which holds the hash, so the hash is the
+    /// accident waiting to happen: the representation is a separate struct
+    /// precisely so that the row cannot be serialized by accident, and this
+    /// test is what keeps it that way.
+    #[actix_web::test]
+    async fn no_response_carries_a_password_or_its_hash() {
+        let username = "no-password-in-a-response-username";
+        let password = "no-password-in-a-response-password";
+        let app = test::init_service(build_app!()).await;
+
+        let created = assert_response_success(
+            register(&app, username, password).await,
+            "Unable to register account",
+        );
+        let created_body = json_body(created);
+        assert_carries_no_password(&created_body, password);
+        let id = created_body["user"]["id"]
+            .as_i64()
+            .expect("A created user carries its id.")
+            .to_string();
+
+        let auth_key = extract_json_string(
+            assert_response_success(
+                create_auth_key(&app, username, password).await,
+                "Could not create an auth key.",
+            ),
+            "auth_key",
+        );
+
+        // The same user, read back the two ways a client can read one.
+        let by_id = test::TestRequest::get()
+            .uri(&format!("/users/{id}"))
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let by_id = assert_response_success(
+            test::call_service(&app, by_id).await,
+            "Unable to read the created user by its id.",
+        );
+        assert_carries_no_password(&json_body(by_id), password);
+
+        let by_me = test::TestRequest::get()
+            .uri("/users/me")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let by_me = assert_response_success(
+            test::call_service(&app, by_me).await,
+            "Unable to read the caller's own user.",
+        );
+        assert_carries_no_password(&json_body(by_me), password);
     }
 
     /// The caller's own user is at a URI of its own, and the router has to
