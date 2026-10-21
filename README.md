@@ -46,6 +46,14 @@ whether authenticating again could ever help:
   not own. The auth key was good, so a 401 here would send the client in circles asking for
   a key that would be refused exactly the same way.
 
+A path the server knows and a method it serves are two different things. A request for a
+method a path does not support is answered `405 Method Not Allowed`, with an `Allow` header
+naming the methods that path does support: `GET, POST` on the task collection, `GET` on a
+user, and so on. RFC 9110 §15.5.6 asks for exactly this — the resource is there, so a `404`
+would claim it is not, and the `Allow` header says which verb to use instead. A path the
+server does not know at all is still a `404`. The `405` carries the same JSON error body as
+every other client error.
+
 A task you may not see and a task which does not exist are deliberately indistinguishable:
 both answer 403 with the same body shape, on every verb which acts on a task: `GET /tasks/{id}`,
 `PATCH /tasks/{id}`, `GET /tasks/{id}/shares`, `PUT /tasks/{id}/shares/{username}`, and
@@ -89,7 +97,8 @@ changed, and nothing removes it.
   - Statuses: `200 OK`; `400` if `completed` is given a value which is not a boolean,
     e.g. `GET /tasks?completed=maybe`, because such a value names no view of the
     collection, with the same JSON error body every other client error carries; `401` if
-    the auth key is missing, malformed, unknown, or expired.
+    the auth key is missing, malformed, unknown, or expired; `405` with an
+    `Allow: GET, POST` header, for any other method on this path.
 - `POST /tasks`: Creates a task.
   - Input keys:
     - auth\_key [string]: An auth key as returned by `POST /auth_keys`.
@@ -99,7 +108,8 @@ changed, and nothing removes it.
     - task [object]: The created task.
   - Statuses: `201 Created`, with a `Location: /tasks/{id}` header naming the URI the new task
     can be read and changed at; `400` if the title is unusable; `401` if the auth key is
-    missing, malformed, unknown, or expired.
+    missing, malformed, unknown, or expired; `405` with an `Allow: GET, POST` header, for
+    any other method on this path.
 - `GET /tasks/{id}`: Retrieve the contents of the task the URI names. Shared access
   (read or read-write) is honored.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
@@ -111,7 +121,8 @@ changed, and nothing removes it.
   - Statuses: `200 OK`; `404` if the path names no task at all, which includes a missing
     or non-numeric id segment; `403` if the task is not the caller's and not shared with
     them, and for a task which does not exist; `401` if the auth key is missing, malformed,
-    unknown, or expired.
+    unknown, or expired; `405` with an `Allow: GET, PATCH` header, for any other method on
+    this path.
 - `PATCH /tasks/{id}`: Changes some or all of the data contained in a task. Read-write
   shared access is honored: a user with a `read\_write` share may update the task.
   - Input keys:
@@ -122,7 +133,8 @@ changed, and nothing removes it.
   - Path parameters:
     - id [number]: The id of the task to change, e.g. `PATCH /tasks/1`.
   - Statuses: `200 OK`; `400` if no field at all is provided to change, or if the new
-    title is unusable; `403` and `401` as for `GET /tasks/{id}`.
+    title is unusable; `403` and `401` as for `GET /tasks/{id}`; `405` with an
+    `Allow: GET, PATCH` header, for any other method on this path.
 
 ### Shares
 
@@ -147,7 +159,8 @@ not answer.
       "read\_write").
   - Statuses: `200 OK`; `404` if the path names no task at all; `403` if the task is not
     the caller's, and for a task which does not exist; `401` if the auth key is missing,
-    malformed, unknown, or expired.
+    malformed, unknown, or expired; `405` with an `Allow: GET` header, for any other method
+    on this path.
 - `PUT /tasks/{id}/shares/{username}`: Assigns a permission to another user on the task,
   creating the share if it is not there and replacing the permission if it is. The URI names
   a fully specified share and the body says what it grants, so this is an idempotent
@@ -170,7 +183,8 @@ not answer.
     "read\_write"; `404` if the path names no task, and for a username no account has, since
     usernames are public and a share can name one that does not exist; `403` if the task is
     not the caller's, and for a task which does not exist; `401` if the auth key is missing,
-    malformed, unknown, or expired.
+    malformed, unknown, or expired; `405` with an `Allow: PUT, DELETE` header, for any other
+    method on this path.
 - `DELETE /tasks/{id}/shares/{username}`: Removes the share, so the named user loses the
   named access to the named task. This request has no body: the URI says everything it acts
   on, and RFC 9110 §9.3.5 gives content in a `DELETE` no defined meaning, so any
@@ -184,7 +198,8 @@ not answer.
     so removing a share which is already gone leaves the state the caller asked for and is
     answered exactly as the removal which got it there was. Also `404` for a username no
     account has; `403` if the task is not the caller's, and for a task which does not
-    exist; `401` if the auth key is missing, malformed, unknown, or expired.
+    exist; `401` if the auth key is missing, malformed, unknown, or expired; `405` with an
+    `Allow: PUT, DELETE` header, for any other method on this path.
 
 ### Users
 
@@ -212,14 +227,15 @@ name.
       [string]. No response ever carries the password or its hash.
   - Statuses: `201 Created`, with a `Location: /users/{id}` header naming the URI the
     new user can be read at; `400` if the username is unusable; `409` if the username is
-    already taken.
+    already taken; `405` with an `Allow: POST` header, for any other method on this path.
 - `GET /users/me`: Retrieves the caller's own user: the resource relative to the caller.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
     where it is an auth key as returned by `POST /auth_keys`.
   - Output keys:
     - user [object]: The caller's user, with its `id` [number] and its `username`
       [string].
-  - Statuses: `200 OK`; `401` if the auth key is missing, malformed, unknown, or expired.
+  - Statuses: `200 OK`; `401` if the auth key is missing, malformed, unknown, or expired;
+    `405` with an `Allow: GET` header, for any other method on this path.
 - `GET /users/{id}`: Retrieves the user the URI names.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header,
     where it is an auth key as returned by `POST /auth_keys`.
@@ -230,7 +246,8 @@ name.
       `username` [string].
   - Statuses: `200 OK`; `404` if the path names no user at all, which includes a
     missing or non-numeric id segment, and an id no account has, because user ids are
-    public; `401` if the auth key is missing, malformed, unknown, or expired.
+    public; `401` if the auth key is missing, malformed, unknown, or expired; `405` with an
+    `Allow: GET` header, for any other method on this path.
 
 ### Auth keys
 
@@ -266,7 +283,8 @@ with the Bearer challenge instead.
     exists: an unknown username is a refused authentication attempt rather than a missing
     resource, so it answers 401 with the same challenge and the same body as a wrong password,
     never 404. Only an empty or whitespace-only username is a `400`, since that is a malformed
-    header rather than a refused credential.
+    header rather than a refused credential; `405` with an `Allow: POST, DELETE` header, for
+    any other method on this path.
 - `DELETE /auth_keys`: Revokes the auth key the caller presented, so it stops working
   immediately.
   - Takes no body. Send the auth key in the `Authorization: Bearer <auth_key>` header, where it
@@ -274,7 +292,8 @@ with the Bearer challenge instead.
   - Statuses: `204 No Content`, whether or not the key was there: `DELETE` is idempotent, so
     revoking a key which is already gone leaves the state the caller asked for and is answered
     exactly as the removal which got it there was. A key which has been revoked answers `401`
-    with the bearer challenge on every endpoint which takes one.
+    with the bearer challenge on every endpoint which takes one; `405` with an
+    `Allow: POST, DELETE` header, for any other method on this path.
 
 There is no `GET` on an auth key and no `DELETE /auth_keys/{id}`, so nothing is served at the
 URI the `Location` above names. Revoking a key is done by presenting it in the header, which is
@@ -293,6 +312,8 @@ watcher is unauthenticated.
 
 - `GET /health`: Answers `200 OK` with an empty body, for as long as the server is running.
   - Takes no body and no credentials.
+  - Statuses: `200 OK`; `405` with an `Allow: GET` header, for any other method on this
+    path.
 
 ## Directory Map
 - .github/workflows/\*:

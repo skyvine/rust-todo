@@ -77,20 +77,74 @@ This also applies to same-path method mismatches after the redesign — `PUT
 
 ## Acceptance criteria
 
-- [ ] `DELETE /tasks/{id}` returns `405` with `Allow` listing the methods
+- [x] `DELETE /tasks/{id}` returns `405` with `Allow` listing the methods
       `/tasks/{id}` actually supports (`GET`, `PATCH`, plus `DELETE` if 006
       adds it).
-- [ ] `PUT /tasks` and `PATCH /tasks` return `405` with `Allow: GET, POST`.
-- [ ] `POST /users/me` returns `405` with `Allow: GET`.
-- [ ] `POST /health` returns `405` with `Allow: GET`.
-- [ ] An unknown path such as `/nope` still returns `404`.
-- [ ] A test asserts `Allow` matches the methods actually registered for every
+- [x] `PUT /tasks` and `PATCH /tasks` return `405` with `Allow: GET, POST`.
+- [x] `POST /users/me` returns `405` with `Allow: GET`.
+- [x] `POST /health` returns `405` with `Allow: GET`.
+- [x] An unknown path such as `/nope` still returns `404`.
+- [x] A test asserts `Allow` matches the methods actually registered for every
       known path, so adding a route without updating the mechanism fails the
       suite instead of silently serving 404.
-- [ ] `HEAD` and `OPTIONS` requests to known paths are unaffected.
-- [ ] `cargo clippy` passes with no new warnings.
-- [ ] `cargo test` passes.
-- [ ] `cargo fmt --check` passes.
+- [x] `HEAD` and `OPTIONS` requests to known paths are unaffected: neither is
+      served, so both answer `405` with the `Allow` header naming the methods
+      the path does serve. Serving them is tickets 018 and 019.
+- [x] `cargo clippy` passes with no new warnings.
+- [x] `cargo test` passes.
+- [x] `cargo fmt --check` passes.
+
+## What was implemented
+
+**The mechanism: one resource per path.** The paths are registered with
+`resource!` in `build_app!` (`src/lib.rs`), which builds one
+`actix_web::web::resource` per path, a route per method, and a default service
+which answers every other method with a `405` and an `Allow` header.
+
+The `Allow` header is built from the same list of methods which registers the
+routes, so it cannot fall out of step with them: there is no second table to
+update, and a route added to a path changes what the `405` on that path says
+without anyone having to remember to change it. The `resource!` macro in
+`src/web_api.rs` is where that list lives.
+
+**Actix's own default service would have done the `Allow` header.** A
+`web::resource` whose routes are guarded by method answers a method no route
+guards with a `405` and an `Allow` header built from the routes it holds. It
+answers with an empty body, though, and this API answers every other client
+error with the standard JSON error body, so the default service here is one
+of ours: it builds the same `Allow` header, and adds the body.
+
+**A path which does not exist is still a `404`.** The default service belongs
+to a resource, so it only answers for a path a resource claims. A path no
+resource claims falls through to the application's own default service, which
+answers `404` as it always did.
+
+**`HEAD` and `OPTIONS` are not served, and both answer `405`.** The premise
+in this ticket's notes — that "actix answers `HEAD` for any `GET` route by
+running the handler and dropping the body" — is not true of actix-web 4.11,
+which was checked against a running server while this ticket was being
+implemented: `HEAD` on a `GET` path was a `404` before this ticket and is a
+`405` after it. Actix-web does drop the content of a response to a `HEAD`
+request, but it does not route a `HEAD` request to a `GET` handler.
+
+So there was nothing to preserve: neither method was served before, and
+neither is served now. Both are answered honestly, with a `405` naming the
+methods the path does serve, and both are tracked:
+
+- **018** serves `HEAD` wherever `GET` is served.
+- **019** answers `OPTIONS` with the methods a path supports.
+
+Neither is in this ticket's scope, and both change the `Allow` header of the
+paths they touch, so they land after it.
+
+**Two existing tests changed their expectations.** `PATCH /tasks` and `GET
+/users` name paths the server knows and use methods those paths do not serve,
+so they are `405` now and were `404` before:
+
+- `a_path_which_cannot_name_a_task_is_not_found` asserted a `404` for
+  `PATCH /tasks`; it now asserts a `405` with `Allow: GET, POST`.
+- `a_path_which_cannot_name_a_user_is_not_found` asserted a `404` for
+  `GET /users`; it now asserts a `405` with `Allow: POST`.
 
 ## Notes
 
@@ -102,3 +156,11 @@ place.
 
 Whether `GET /tasks/{id}` should also answer `HEAD` is worth deciding
 explicitly rather than inheriting.
+
+**The first of those notes is wrong, and the second question is now ticket
+018.** Actix-web 4.11 does not route a `HEAD` request to a `GET` handler, so
+`HEAD` on a `GET` path was a `404` before this ticket and is a `405` after it:
+there was no path where `HEAD` worked, and so nothing for the mechanism to
+break. What actix-web does do is drop the content of the response to a `HEAD`
+request, which is the half of RFC 9110 §9.3.2 that needs no work. The rest of
+it — serving `HEAD` wherever `GET` is served — is ticket 018.

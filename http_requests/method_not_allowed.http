@@ -1,0 +1,9 @@
+# A method a path does not support is answered with a 405 and an Allow header
+# naming the methods it does support, rather than with a 404 which would claim
+# the path does not exist. The task at this URI is read with GET and changed
+# with PATCH, and there is no DELETE for a task, so a DELETE is answered 405
+# with "Allow: GET, PATCH".
+DELETE /tasks/1 HTTP/1.1
+Host: 127.0.0.1
+Connection: close
+Authorization: Bearer manual-auth-key

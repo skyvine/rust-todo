@@ -11,7 +11,7 @@ use actix_web::{
     Error, FromRequest, HttpRequest, dev::Payload, error::InternalError, error::JsonPayloadError,
     error::QueryPayloadError,
 };
-use actix_web::{HttpResponse, Responder, delete, get, patch, post, put};
+use actix_web::{HttpResponse, Responder};
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, SaltString, rand_core::OsRng},
@@ -399,6 +399,81 @@ pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> Error {
         .into()
 }
 
+// Routing
+
+/// The answer to a request for a method a path does not support: a
+/// `405 Method Not Allowed` naming the methods it does support.
+///
+/// RFC 9110 §15.5.6 asks for exactly this. The path is one the server knows,
+/// so a `404` would claim the resource does not exist when it does; the
+/// method is one the resource does not implement, which is what a 405 says.
+/// The `Allow` header names the methods which do work, so a client which
+/// used the wrong verb is told which one to use instead.
+///
+/// The body is the standard JSON error body every other client error
+/// carries, so a client reads a failure the same way whichever failure it is.
+pub(crate) fn method_not_allowed(request: HttpRequest, allow: &str) -> HttpResponse {
+    let request_id = Uuid::new_v4();
+    let _enter_guard = span!(Level::ERROR, "Method Not Allowed", %request_id).entered();
+
+    event!(
+        Level::ERROR,
+        %request_id,
+        "Method {} is not supported at {}",
+        request.method(),
+        request.path()
+    );
+
+    HttpResponse::MethodNotAllowed()
+        .insert_header((actix_web::http::header::ALLOW, allow.to_string()))
+        .json(error_body_with_message(
+            request_id,
+            format!(
+                "{} is not supported here; this resource supports {}",
+                request.method(),
+                allow
+            ),
+        ))
+}
+
+/// Builds the resource for a path: a route for each method the path
+/// supports, and a default service which answers every other method with a
+/// `405 Method Not Allowed` naming the methods it does support.
+///
+/// The methods are named once, in the list of routes, and the `Allow` header
+/// of that answer is built from the same list, so the header cannot fall out
+/// of step with the routes which are actually registered. A path which no
+/// resource claims is still answered with a `404`, because a path the server
+/// does not know is a different thing from a method it does not serve.
+///
+/// The macro takes the methods in the order they are listed in the `Allow`
+/// header, and the handler of each.
+macro_rules! resource {
+    ($path:expr, $( $method:ident => $handler:expr ),+ $(,)?) => {{
+        let methods: Vec<actix_web::http::Method> =
+            vec![$(actix_web::http::Method::$method),+];
+        let allow = methods
+            .iter()
+            .map(actix_web::http::Method::as_str)
+            .collect::<Vec<&str>>()
+            .join(", ");
+        actix_web::web::resource($path)
+            $(.route(
+                actix_web::web::route()
+                    .method(actix_web::http::Method::$method)
+                    .to($handler)
+            ))*
+            .default_service(actix_web::web::to(
+                move |request: actix_web::HttpRequest| {
+                    let allow = allow.clone();
+                    async move { $crate::web_api::method_not_allowed(request, &allow) }
+                }
+            ))
+    }};
+}
+
+pub(crate) use resource;
+
 /// The path parameter every task URI carries: the id of the task it names.
 ///
 /// The id lives in the URI rather than in a query string or a body field, so
@@ -406,7 +481,7 @@ pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> Error {
 /// no task at all, and the router answers that with a 404 rather than an
 /// extractor answering 400 for a request which named nothing.
 #[derive(Deserialize)]
-struct TaskPath {
+pub(crate) struct TaskPath {
     id: i32,
 }
 
@@ -418,7 +493,7 @@ struct TaskPath {
 /// it without repeating anything else, and a `DELETE` needs nothing in a body
 /// to say which share to remove.
 #[derive(Deserialize)]
-struct SharePath {
+pub(crate) struct SharePath {
     id: i32,
     username: String,
 }
@@ -430,7 +505,7 @@ struct SharePath {
 /// and the router answers that with a 404 rather than an extractor answering
 /// 400 for a request which named nothing.
 #[derive(Deserialize)]
-struct UserPath {
+pub(crate) struct UserPath {
     id: i32,
 }
 
@@ -520,8 +595,7 @@ fn share_body(share: &Share) -> serde_json::Value {
 /// The API stays stateless: the key is presented in `Authorization: Bearer` on
 /// every later request, and this endpoint is the only one which takes
 /// credentials rather than a key.
-#[post("/auth_keys")]
-pub async fn create_auth_key(credentials: Credentials) -> impl Responder {
+pub(crate) async fn create_auth_key(credentials: Credentials) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Create Auth Key", %request_id).entered();
 
@@ -606,8 +680,7 @@ pub async fn create_auth_key(credentials: Credentials) -> impl Responder {
 /// A key which is not there is not a failure: `DELETE` is idempotent, so
 /// revoking a key which was already revoked leaves the state the caller asked
 /// for and is answered exactly as the removal which got it there was.
-#[delete("/auth_keys")]
-pub async fn delete_auth_key(auth_key: AuthKey) -> impl Responder {
+pub(crate) async fn delete_auth_key(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Delete Auth Key", %request_id).entered();
 
@@ -638,7 +711,7 @@ pub async fn delete_auth_key(auth_key: AuthKey) -> impl Responder {
 /// is a client error: `query_error_handler` answers 400 with the standard JSON
 /// error body.
 #[derive(Deserialize)]
-struct TasksQuery {
+pub(crate) struct TasksQuery {
     completed: Option<bool>,
 }
 
@@ -648,8 +721,7 @@ struct TasksQuery {
 /// The filter narrows the collection rather than naming a second one: the same
 /// URI serves both, and the task's completion state is a property of the task,
 /// not of the way it is asked for.
-#[get("/tasks")]
-pub async fn get_tasks(
+pub(crate) async fn get_tasks(
     auth_key: AuthKey,
     query: actix_web::web::Query<TasksQuery>,
 ) -> impl Responder {
@@ -683,8 +755,7 @@ pub async fn get_tasks(
 ///
 /// The user must be logged in as the task's owner or have a share on
 /// the task in order to get the task.
-#[get("/tasks/{id}")]
-pub async fn get_task_by_id(
+pub(crate) async fn get_task_by_id(
     auth_key: AuthKey,
     path: actix_web::web::Path<TaskPath>,
 ) -> impl Responder {
@@ -747,8 +818,7 @@ pub async fn get_task_by_id(
 /// the server is running and responding to requests. It is not a resource and
 /// takes no credentials: a liveness probe has to be answerable by whatever is
 /// watching the server, which does not have an auth key.
-#[get("/health")]
-pub async fn health() -> impl Responder {
+pub(crate) async fn health() -> impl Responder {
     event!(Level::TRACE, "Responding to health check");
     HttpResponse::Ok()
 }
@@ -760,8 +830,7 @@ pub async fn health() -> impl Responder {
 /// the owner may list them, and a task which does not exist is answered
 /// exactly as a task owned by someone else is, so the listing cannot be used
 /// to find out which task ids exist.
-#[get("/tasks/{id}/shares")]
-pub async fn get_task_shares(
+pub(crate) async fn get_task_shares(
     auth_key: AuthKey,
     path: actix_web::web::Path<TaskPath>,
 ) -> impl Responder {
@@ -801,8 +870,10 @@ pub async fn get_task_shares(
 /// way it identifies a task. User ids are public — they appear in the `owner`
 /// field of a task and in the share payloads — so an unknown id is a 404
 /// rather than a hidden one.
-#[get("/users/{id}")]
-pub async fn get_user(auth_key: AuthKey, path: actix_web::web::Path<UserPath>) -> impl Responder {
+pub(crate) async fn get_user(
+    auth_key: AuthKey,
+    path: actix_web::web::Path<UserPath>,
+) -> impl Responder {
     let user_id = path.into_inner().id;
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get User", %request_id).entered();
@@ -838,8 +909,7 @@ pub async fn get_user(auth_key: AuthKey, path: actix_web::web::Path<UserPath>) -
 /// the request was made by. The id is in the answer as well as the username,
 /// because the id appears in every task and share payload, and a client which
 /// could not look its own id up would have to guess it.
-#[get("/users/me")]
-pub async fn get_current_user(auth_key: AuthKey) -> impl Responder {
+pub(crate) async fn get_current_user(auth_key: AuthKey) -> impl Responder {
     let request_id = Uuid::new_v4();
     let _enter_guard = span!(Level::ERROR, "Get Current User", %request_id).entered();
 
@@ -867,7 +937,7 @@ pub async fn get_current_user(auth_key: AuthKey) -> impl Responder {
 // POST endpoints
 
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct AddTaskPayload {
+pub(crate) struct AddTaskPayload {
     title: String,
     description: Option<String>,
 }
@@ -876,8 +946,7 @@ struct AddTaskPayload {
 ///
 /// "Completed" defaults to "false". The `Location` header names the URI of the
 /// new task, which is where it can be read and changed from then on.
-#[post("/tasks")]
-pub async fn add_task(
+pub(crate) async fn add_task(
     auth_key: AuthKey,
     mut payload: actix_web::web::Json<AddTaskPayload>,
 ) -> impl Responder {
@@ -926,7 +995,7 @@ pub async fn add_task(
 /// stored, and the hash stays in the database. The struct is zeroized when the
 /// request is done with it, so the cleartext does not outlive the handler.
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct UserRegistrationPayload {
+pub(crate) struct UserRegistrationPayload {
     username: String,
     password: String,
 }
@@ -943,8 +1012,7 @@ struct UserRegistrationPayload {
 /// The representation carries the id and the username, and never the password
 /// hash: the hash is the server's business, and no response says anything
 /// about it.
-#[post("/users")]
-pub async fn create_user(
+pub(crate) async fn create_user(
     mut account_info: actix_web::web::Json<UserRegistrationPayload>,
 ) -> impl Responder {
     let request_id = Uuid::new_v4();
@@ -1004,7 +1072,7 @@ pub async fn create_user(
 /// The task the fields belong to is named by the URI, so the body carries no
 /// identifier of its own.
 #[derive(Default, Deserialize, PartialEq, Serialize)]
-struct UpdateTaskPayload {
+pub(crate) struct UpdateTaskPayload {
     completed: Option<bool>,
     title: Option<String>,
     description: Option<String>,
@@ -1014,8 +1082,7 @@ struct UpdateTaskPayload {
 ///
 /// It is an error for all of the optional values to be None; at least on field must be updated for
 /// this endpoint to succeed.
-#[patch("/tasks/{id}")]
-pub async fn update_task_by_id(
+pub(crate) async fn update_task_by_id(
     auth_key: AuthKey,
     path: actix_web::web::Path<TaskPath>,
     payload: actix_web::web::Json<UpdateTaskPayload>,
@@ -1098,7 +1165,7 @@ pub async fn update_task_by_id(
 /// own — the task, the sharee and the URI of the share are all in the path,
 /// and the permission is the one field a share has left to say.
 #[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-struct SharePayload {
+pub(crate) struct SharePayload {
     permission: String,
 }
 
@@ -1114,8 +1181,7 @@ struct SharePayload {
 /// share's URI when it was created, `200 OK` when a permission was replaced.
 /// Both answer with the share itself, so a client never has to follow the
 /// `Location` to learn what it asked for.
-#[put("/tasks/{id}/shares/{username}")]
-pub async fn put_share(
+pub(crate) async fn put_share(
     auth_key: AuthKey,
     path: actix_web::web::Path<SharePath>,
     payload: actix_web::web::Json<SharePayload>,
@@ -1193,8 +1259,7 @@ pub async fn put_share(
 /// asked for is the state it already has. Only the owner may remove a share,
 /// and a task which does not exist is answered exactly as a task owned by
 /// someone else is.
-#[delete("/tasks/{id}/shares/{username}")]
-pub async fn delete_share(
+pub(crate) async fn delete_share(
     auth_key: AuthKey,
     path: actix_web::web::Path<SharePath>,
 ) -> impl Responder {
@@ -1237,7 +1302,7 @@ mod tests {
     use crate::{build_app, core::Task};
     use actix_http::Request;
     use actix_web::http::Method;
-    use actix_web::http::header::{AUTHORIZATION, CONTENT_TYPE, LOCATION, WWW_AUTHENTICATE};
+    use actix_web::http::header::{ALLOW, AUTHORIZATION, CONTENT_TYPE, LOCATION, WWW_AUTHENTICATE};
     use actix_web::{App, body::MessageBody, dev::Service, dev::ServiceResponse, test, web};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ctor::ctor;
@@ -2227,7 +2292,6 @@ mod tests {
             (Method::GET, "/tasks/"),
             (Method::GET, "/tasks/not-a-number"),
             (Method::GET, "/tasks/1/"),
-            (Method::PATCH, "/tasks"),
             (Method::PATCH, "/tasks/"),
             (Method::PATCH, "/tasks/not-a-number"),
         ] {
@@ -2243,6 +2307,28 @@ mod tests {
                 "{uri} names no task, so it should be a 404."
             );
         }
+
+        // `PATCH /tasks` names the collection, which is a path the server
+        // knows: it is the method the collection does not support which is
+        // wrong, so it is a 405 rather than a 404.
+        let request = test::TestRequest::patch()
+            .uri("/tasks")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            405,
+            "The task collection does not support PATCH, so it should be a 405."
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(ALLOW)
+                .and_then(|value| value.to_str().ok()),
+            Some("GET, POST"),
+            "The 405 should name the methods the task collection supports."
+        );
     }
 
     #[actix_web::test]
@@ -3571,7 +3657,9 @@ mod tests {
     /// the old query string asked a 400 of a request which named nothing.
     ///
     /// `GET /users` is not among them: it names the collection, which has no
-    /// listing to offer.
+    /// listing to offer. The collection is a path the server knows, so the
+    /// method it does not support is what is wrong with the request, and it is
+    /// answered with a 405.
     #[actix_web::test]
     async fn a_path_which_cannot_name_a_user_is_not_found() {
         let username = "unusable-user-path-username";
@@ -3580,7 +3668,7 @@ mod tests {
 
         let auth_key = register_and_create_auth_key(&app, username, password).await;
 
-        for uri in ["/users", "/users/", "/users/not-a-number"] {
+        for uri in ["/users/", "/users/not-a-number"] {
             let request = test::TestRequest::get()
                 .uri(uri)
                 .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
@@ -3592,6 +3680,25 @@ mod tests {
                 "{uri} names no user, so it should be a 404."
             );
         }
+
+        let request = test::TestRequest::get()
+            .uri("/users")
+            .insert_header((AUTHORIZATION, format!("Bearer {auth_key}")))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(
+            response.status().as_u16(),
+            405,
+            "The user collection has no listing, so a GET of it should be a 405."
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(ALLOW)
+                .and_then(|value| value.to_str().ok()),
+            Some("POST"),
+            "The 405 should name the methods the user collection supports."
+        );
     }
 
     /// A created user is a resource at a URI of its own, so the creation says
@@ -3860,5 +3967,121 @@ mod tests {
             revoke_response.headers().get(CONTENT_TYPE).is_none(),
             "An empty body has no representation to describe."
         );
+    }
+
+    /// The methods every path of the API supports, and so the `Allow` header
+    /// a request for any other method carries.
+    ///
+    /// This is the test's own account of what the API serves, so a route
+    /// added without a line here fails the suite instead of quietly changing
+    /// what a path answers.
+    const KNOWN_PATHS: &[(&str, &[&str])] = &[
+        ("/auth_keys", &["POST", "DELETE"]),
+        ("/tasks", &["GET", "POST"]),
+        ("/tasks/1", &["GET", "PATCH"]),
+        ("/tasks/1/shares", &["GET"]),
+        ("/tasks/1/shares/alice", &["PUT", "DELETE"]),
+        ("/users", &["POST"]),
+        ("/users/me", &["GET"]),
+        ("/users/1", &["GET"]),
+        ("/health", &["GET"]),
+    ];
+
+    /// Every method a client might send.
+    const EVERY_METHOD: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+
+    /// Sends one request and answers with the status and the `Allow` header
+    /// it carried.
+    async fn request_with(
+        app: &impl Service<Request, Response = ServiceResponse, Error = impl std::fmt::Debug>,
+        method: &str,
+        uri: &str,
+    ) -> (u16, Option<String>) {
+        let request = test::TestRequest::default()
+            .method(Method::from_bytes(method.as_bytes()).expect("A method name."))
+            .uri(uri)
+            .to_request();
+        let response = test::call_service(app, request).await;
+        let allow = response
+            .headers()
+            .get(ALLOW)
+            .and_then(|value| value.to_str().ok())
+            .map(String::from);
+        (response.status().as_u16(), allow)
+    }
+
+    /// A method a path does not support is answered with a `405 Method Not
+    /// Allowed` and an `Allow` header naming the methods it does support,
+    /// rather than with a `404` which claims the path does not exist.
+    ///
+    /// The `Allow` header is built from the routes which are actually
+    /// registered, so this test is what keeps it honest: a route added to a
+    /// path without updating this list fails the suite.
+    #[actix_web::test]
+    async fn an_unsupported_method_is_answered_with_405_and_an_allow_header() {
+        let app = test::init_service(build_app!()).await;
+
+        for (path, supported) in KNOWN_PATHS {
+            let allow = supported.join(", ");
+            for method in EVERY_METHOD {
+                let (status, header) = request_with(&app, method, path).await;
+
+                if supported.contains(method) {
+                    assert_ne!(
+                        status, 405,
+                        "{method} {path} is served, so it must not be a 405."
+                    );
+                    assert_eq!(
+                        header, None,
+                        "{method} {path} is served, so it must not carry an Allow header."
+                    );
+                } else {
+                    assert_eq!(
+                        status, 405,
+                        "{method} {path} is not served, so it must be a 405."
+                    );
+                    assert_eq!(
+                        header,
+                        Some(allow.clone()),
+                        "The 405 for {method} {path} must name the methods it supports."
+                    );
+                }
+            }
+        }
+    }
+
+    /// The 405 carries the standard JSON error body, so a client reads it the
+    /// way it reads every other failure.
+    #[actix_web::test]
+    async fn the_405_carries_the_standard_error_body() {
+        let app = test::init_service(build_app!()).await;
+
+        let request = test::TestRequest::delete().uri("/tasks/1").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status().as_u16(), 405);
+        assert_json_content_type(&response, "The 405 said nothing about its body.");
+        assert_json_error_with_request_id(response);
+    }
+
+    /// A path which does not exist is still a `404`, whichever method is sent
+    /// to it: a path the server does not know is a different thing from a
+    /// method it does not serve.
+    #[actix_web::test]
+    async fn an_unknown_path_is_answered_with_404() {
+        let app = test::init_service(build_app!()).await;
+
+        for path in ["/nope", "/tasks/1/comments", "/users/1/tasks"] {
+            for method in EVERY_METHOD {
+                let (status, header) = request_with(&app, method, path).await;
+                assert_eq!(
+                    status, 404,
+                    "{method} {path} names nothing, so it must be a 404."
+                );
+                assert_eq!(
+                    header, None,
+                    "A 404 names no methods, so it must not carry an Allow header."
+                );
+            }
+        }
     }
 }
