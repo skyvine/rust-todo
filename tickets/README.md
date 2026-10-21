@@ -41,6 +41,8 @@ line points at a lower number, so no ticket is ever blocked by a later one.
 | 015 | [docs-and-http-examples-for-the-new-uris.md](015-docs-and-http-examples-for-the-new-uris.md) | Docs and `http_requests/` sweep. |
 | 016 | [addressable-auth-key-with-expiry.md](016-addressable-auth-key-with-expiry.md) | The `Location` of a created auth key names a URI nothing is served at, and expiry is invisible. |
 | 017 | [get-a-single-share.md](017-get-a-single-share.md) | The `Location` of a created share names a URI nothing is served at. |
+| 018 | [head-is-answered-where-get-is.md](018-head-is-answered-where-get-is.md) | A path which serves `GET` does not serve `HEAD`, so a `HEAD` request is refused. |
+| 019 | [options-answers-with-the-methods-a-path-supports.md](019-options-answers-with-the-methods-a-path-supports.md) | `OPTIONS` is refused rather than answered with the methods a path supports. |
 
 The numbering has five phases, which is why 011–014 come after the redesign
 even though they are smaller than the redesign tickets:
@@ -63,6 +65,10 @@ even though they are smaller than the redesign tickets:
   008 minted a `Location` for a created share and scoped out a `GET` on it, so
   the URI is real but unserved. It is a smaller sibling of 016, and it depends
   on the same 012 mechanism for the path's `Allow`.
+- **018 and 019** are gaps 012 found rather than left by it: 012 makes a path
+  answer `405` for a method it does not serve, and in doing so it made visible
+  that the API serves no `HEAD` and no `OPTIONS` at all. Both land after 012,
+  because both are answers the path's `Allow` header has to keep true.
 
 Dependencies:
 
@@ -76,6 +82,7 @@ Dependencies:
   describes the API as it stands, and 016 changes one endpoint of it, so 015 can
   land first and 016 updates that section the way every other ticket does.
 - 017 depends on 008, 011 and 012, for the same reasons 016 does.
+- 018 and 019 depend on 012, and are independent of each other.
 
 ## Findings map
 
@@ -97,6 +104,8 @@ Dependencies:
 | 14 | Stale `README.md` / `http_requests/` (send `auth_key` in bodies) | 015 |
 | 15 | A `Location` naming a URI nothing is served at (a created auth key) | 016 |
 | 16 | A `Location` naming a URI nothing is served at (a created share) | 017 |
+| 17 | No `HEAD` is served where `GET` is | 018 |
+| 18 | No `OPTIONS` is served anywhere | 019 |
 
 ## Conventions for working on these tickets
 
